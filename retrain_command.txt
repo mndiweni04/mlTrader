@@ -1,0 +1,36 @@
+# 1. Clear old raw data
+Write-Host "--- 1. Clearing old raw data files ---"
+Remove-Item -Path "data/raw/*.csv" -ErrorAction SilentlyContinue
+Write-Host "Old .csv files deleted.`n"
+
+# 2. Acquire raw data
+Write-Host "--- 2. Acquiring raw data ---"
+python acquire_data.py
+Write-Host ""
+
+# 3. Clear old processed data
+Write-Host "--- 3. Clearing old processed data (.npy) ---"
+Remove-Item -Path "data/processed/*.npy" -ErrorAction SilentlyContinue
+Write-Host "Old .npy files deleted.`n"
+
+# 4. Process data
+Write-Host "--- 4. Processing raw data ---"
+python process_data.py
+Write-Host ""
+
+# 5. Train models
+Write-Host "--- 5. Training models ---"
+python train_model.py
+Write-Host ""
+
+# 6. Evaluate models
+Write-Host "--- 6. Evaluating models ---"
+python evaluate_model.py
+Write-Host ""
+
+# 7. Run Live Predictions
+Write-Host "--- 7. Running Live Predictions ---"
+python predict.py
+Write-Host ""
+
+Write-Host "--- All Steps Complete for all tickers ---"

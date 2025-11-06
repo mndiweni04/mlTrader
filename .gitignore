@@ -1,0 +1,14 @@
+# Python
+*.pyc
+__pycache__/
+.venv/
+venv/
+env/
+
+# Data & Models (These are generated on the server)
+data/
+models/
+
+# OS
+.DS_Store
+Thumbs.db
