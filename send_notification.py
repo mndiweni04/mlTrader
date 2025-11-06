@@ -1,25 +1,27 @@
 # send_notification.py
 """
 Handles sending email alerts using Gmail.
+Reads credentials from GitHub Actions Secrets.
 """
 
 import smtplib
 from email.message import EmailMessage
+import os # <-- Make sure os is imported
 
-# --- 🔔 ACTION REQUIRED 🔔 ---
-# ENTER YOUR SENDER EMAIL, 16-DIGIT APP PASSWORD, AND RECEIVER EMAIL
-SENDER_EMAIL = "your-email@gmail.com"
-SENDER_APP_PASSWORD = "your-16-digit-app-password" # e.g., "abcd efgh ijkl mnop"
-RECEIVER_EMAIL = "your-email-to-receive-alerts@gmail.com"
-# -----------------------------
+# --- 🔔 CREDENTIALS ARE NOW READ FROM GITHUB SECRETS 🔔 ---
+SENDER_EMAIL = os.environ.get("Sender_Email")
+SENDER_APP_PASSWORD = os.environ.get("Sender_App_Password")
+RECEIVER_EMAIL = os.environ.get("Receiver_Email")
+# ---------------------------------------------------------
 
 def send_email(subject, body):
     """
-    Sends an email using the credentials defined above.
+    Sends an email using the credentials from environment variables.
     """
     
-    if SENDER_EMAIL == "your-email@gmail.com" or SENDER_APP_PASSWORD == "your-16-digit-app-password":
-        print("--- EMAIL FAILED: Please configure SENDER_EMAIL and SENDER_APP_PASSWORD in send_notification.py ---")
+    if not SENDER_EMAIL or not SENDER_APP_PASSWORD or not RECEIVER_EMAIL:
+        print("--- EMAIL FAILED: One or more environment variables are missing ---")
+        print("   (SENDER_EMAIL, SENDER_APP_PASSWORD, RECEIVER_EMAIL)")
         return
 
     try:
@@ -29,7 +31,6 @@ def send_email(subject, body):
         msg['From'] = SENDER_EMAIL
         msg['To'] = RECEIVER_EMAIL
 
-        # Connect to Gmail's SMTP server
         server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
         server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
         server.send_message(msg)
@@ -37,16 +38,12 @@ def send_email(subject, body):
         print("Notification email sent successfully.")
     except smtplib.SMTPAuthenticationError:
         print("--- EMAIL FAILED: SMTP Authentication Error ---")
-        print("   1. Did you use the 16-digit 'App Password'?")
-        print("   2. Is the SENDER_EMAIL correct?")
+        print("   1. Is the SENDER_APP_PASSWORD secret correct?")
+        print("   2. Is the SENDER_EMAIL secret correct?")
     except Exception as e:
         print(f"--- EMAIL FAILED: An unexpected error occurred: {e} ---")
 
 if __name__ == "__main__":
-    # This allows you to test the email script directly
-    # Run: python send_notification.py
-    print("Sending test email...")
-    send_email(
-        subject="ML Trader Bot - Test Email",
-        body="This is a test of the notification system."
-    )
+    # You can no longer test this by running `python send_notification.py`
+    # because the secrets only exist inside GitHub Actions.
+    print("This script is now designed to be run by the GitHub Action.")

@@ -1,7 +1,7 @@
 # run_trader.py
 """
 Runs the live prediction script and emails a notification if a trade is found.
-This is the main file to run for your daily alerts.
+This is the main file for your daily alerts.
 """
 
 import subprocess
@@ -9,7 +9,7 @@ import sys
 import os
 from datetime import datetime
 import pytz
-from send_notification import send_email # <-- Imports the new emailer
+from send_notification import send_email # Imports the emailer
 
 def run_predictions():
     """
@@ -29,7 +29,7 @@ def run_predictions():
             [python_exe, script_path],
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300 # 5-minute timeout
         )
         
         if process.returncode != 0:
@@ -58,7 +58,7 @@ def check_for_signals(output):
             try:
                 # Find the lines above the signal
                 ticker_line = ""
-                for j in range(i - 5, i):
+                for j in range(i - 5, i): # Search 5 lines up
                     if lines[j].startswith("---"):
                         ticker_line = lines[j]
                         break
@@ -70,7 +70,7 @@ def check_for_signals(output):
                 confidence_line = lines[i+1]
                 price_line = lines[i+2]
                 sl_line = lines[i+3]
-                tp_line = lines[i+4]
+                tp_line = lines[i+4] # <-- THE NEW LINE
                 
                 signal_details = {
                     "ticker": current_ticker,
@@ -78,7 +78,7 @@ def check_for_signals(output):
                     "confidence": confidence_line.split(':')[-1].strip(),
                     "price": price_line.split(':')[-1].strip(),
                     "stop_loss": sl_line.split(':')[-1].strip(),
-                    "take_profit": tp_line.split(':')[-1].strip()
+                    "take_profit": tp_line.split(':')[-1].strip() # <-- THE NEW LINE
                 }
                 signals.append(signal_details)
             except Exception as e:
@@ -123,7 +123,7 @@ if __name__ == "__main__":
                 print(f"  CONFIDENCE: {sig['confidence']}")
                 print(f"  ENTRY:     {sig['price']}")
                 print(f"  STOP LOSS: {sig['stop_loss']}")
-                print(f"  TAKE PROFIT: {sig['take_profit']}")
+                print(f"  TAKE PROFIT: {sig['take_profit']}") # <-- THE NEW LINE
                 
                 email_body += (
                     f"------------------------\n"
@@ -132,7 +132,7 @@ if __name__ == "__main__":
                     f"CONFIDENCE: {sig['confidence']}\n"
                     f"ENTRY:     {sig['price']}\n"
                     f"STOP LOSS: {sig['stop_loss']}\n"
-                    f"TAKE PROFIT: {sig['take_profit']}\n"
+                    f"TAKE PROFIT: {sig['take_profit']}\n" # <-- THE NEW LINE
                     f"------------------------\n"
                 )
 
