@@ -9,9 +9,9 @@ from email.message import EmailMessage
 import os # <-- Make sure os is imported
 
 # --- 🔔 CREDENTIALS ARE NOW READ FROM GITHUB SECRETS 🔔 ---
-SENDER_EMAIL = os.environ.get("Sender_Email")
-SENDER_APP_PASSWORD = os.environ.get("Sender_App_Password")
-RECEIVER_EMAIL = os.environ.get("Receiver_Email")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
+SENDER_APP_PASSWORD = os.environ.get("SENDER_APP_PASSWORD")
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 # ---------------------------------------------------------
 
 def send_email(subject, body):
@@ -44,6 +44,4 @@ def send_email(subject, body):
         print(f"--- EMAIL FAILED: An unexpected error occurred: {e} ---")
 
 if __name__ == "__main__":
-    # You can no longer test this by running `python send_notification.py`
-    # because the secrets only exist inside GitHub Actions.
     print("This script is now designed to be run by the GitHub Action.")
