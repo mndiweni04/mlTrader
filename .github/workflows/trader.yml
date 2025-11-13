@@ -3,7 +3,7 @@ name: MLTrader Daily Run
 on:
   workflow_dispatch: # Allows manual running
   schedule:
-    - cron: '30 21 * * 1-5' # Example: 9:30 PM UTC Mon-Fri
+    - cron: '30 21 * * 1-5' # 9:30 PM UTC Mon-Fri
 
 jobs:
   run-pipeline:
@@ -16,9 +16,9 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11' # Match your local environment
+        python-version: '3.11'
 
-    # --- *** THIS IS THE FIX *** ---
+    # --- This step is CRITICAL for TA-Lib ---
     # 1. Install the C-library build dependencies
     - name: Install build-essential
       run: |
@@ -34,12 +34,12 @@ jobs:
         ./configure --prefix=/usr
         make
         sudo make install
-    # --- *** END FIX *** ---
+    # --- End TA-Lib setup ---
       
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        # pip install talib will now find the C-library we just built
+        # This will now install TA-Lib (from your corrected file)
         pip install -r requirements.txt 
 
     - name: Run Full ML Pipeline
