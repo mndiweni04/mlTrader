@@ -5,8 +5,22 @@ import os
 import warnings
 import time
 
-TICKERS = ["CL=F"] # FOCUSED
-PERIOD = "5y"
+# --- NEW: Added Macro/Cross-Instrument Tickers from your v2 memo ---
+CORE_TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
+MACRO_TICKERS = [
+    "DX=F",    # US Dollar Index
+    "TLT",     # 20+ Year Treasury Bond ETF (Real Yield Proxy)
+    "^VIX",    # VIX (Volatility Index)
+    "XLE",     # Energy Sector ETF
+    "ZS=F",    # Soybeans
+    "ZW=F",    # Wheat
+    "XLF",     # Financial Sector ETF
+    "XLK"      # Technology Sector ETF
+]
+TICKERS = CORE_TICKERS + MACRO_TICKERS
+# --- END NEW ---
+
+PERIOD = "10y" 
 INTERVAL = "1d"
 EXPECTED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']
 MAX_RETRIES = 3 
@@ -38,6 +52,13 @@ def download_data(ticker):
             df.rename(columns=rename_map, inplace=True)
             if 'Close' not in df.columns and 'Adj Close' in df.columns:
                 df['Close'] = df['Adj Close']
+            
+            # Handle FX data which lacks OHLCV (and VIX)
+            if 'Open' not in df.columns: df['Open'] = df['Close']
+            if 'High' not in df.columns: df['High'] = df['Close']
+            if 'Low' not in df.columns: df['Low'] = df['Close']
+            if 'Volume' not in df.columns: df['Volume'] = 0
+            
             missing_cols = [c for c in EXPECTED_COLUMNS if c not in df.columns]
             if missing_cols: raise Exception(f"Missing columns for {ticker}: {missing_cols}")
                 
@@ -49,11 +70,8 @@ def download_data(ticker):
             
         except Exception as e:
             print(f"  Attempt {attempt + 1}/{MAX_RETRIES} failed: {e}")
-            if attempt + 1 < MAX_RETRIES:
-                time.sleep(5)
-            else:
-                print(f"  All retries failed for {ticker}.")
-                return None
+            if attempt + 1 < MAX_RETRIES: time.sleep(5)
+            else: print(f"  All retries failed for {ticker}."); return None
         
     return None
 
@@ -62,7 +80,12 @@ def save_csv(df, ticker):
         print(f"No data to save for {ticker}.")
         return
     os.makedirs("data/raw", exist_ok=True)
-    file_path = os.path.join("data/raw", f"{ticker.replace('=','_').lower()}_{INTERVAL}_data.csv")
+    
+    # --- NEW: Sanitize filename for tickers like ^VIX ---
+    safe_ticker = ticker.replace('=','_').replace('^','').lower()
+    file_path = os.path.join("data/raw", f"{safe_ticker}_{INTERVAL}_data.csv")
+    # --- END NEW ---
+    
     df.to_csv(file_path)
     print(f"✅ Saved: {file_path}")
 

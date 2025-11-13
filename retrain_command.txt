@@ -9,9 +9,15 @@ python acquire_data.py
 Write-Host ""
 
 # 3. Clear old processed data
-Write-Host "--- 3. Clearing old processed data (.npy) ---"
+Write-Host "--- 3. Clearing old processed data (.npy, .csv) ---"
 Remove-Item -Path "data/processed/*.npy" -ErrorAction SilentlyContinue
-Write-Host "Old .npy files deleted.`n"
+Remove-Item -Path "data/processed/*.csv" -ErrorAction SilentlyContinue 
+Write-Host "Old processed .npy and .csv files deleted.`n"
+
+# 3.5. Clear old models
+Write-Host "--- 3.5. Clearing old models (.joblib) ---"
+Remove-Item -Path "models/*.joblib" -ErrorAction SilentlyContinue
+Write-Host "Old .joblib model files deleted.`n"
 
 # 4. Process data
 Write-Host "--- 4. Processing raw data ---"
@@ -28,9 +34,19 @@ Write-Host "--- 6. Evaluating models ---"
 python evaluate_model.py
 Write-Host ""
 
-# 7. Run Live Predictions
-Write-Host "--- 7. Running Live Predictions ---"
-python predict.py
+# 7. Monitor open trades (Check before opening new ones)
+Write-Host "--- 7. Monitoring open trades ---"
+python monitor_trades.py
+Write-Host ""
+
+# 8. Run trader (Find and log new signals)
+Write-Host "--- 8. Running trader (find/log new signals) ---"
+python run_trader.py
+Write-Host ""
+
+# 9. Analyze results (Show the final P/L)
+Write-Host "--- 9. Analyzing Live Performance ---"
+python visualize_results.py
 Write-Host ""
 
 Write-Host "--- All Steps Complete for all tickers ---"

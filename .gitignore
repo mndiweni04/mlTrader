@@ -1,14 +1,31 @@
-# Python
-*.pyc
-__pycache__/
+# Python virtual environment
 .venv/
 venv/
-env/
+*.venv
 
-# Data & Models (These are generated on the server)
-data/
-models/
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# OS
+# Generated data files
+data/processed/*.npy
+data/processed/*.csv
+
+# Generated model files
+models/*.joblib
+
+# Operating System files
 .DS_Store
 Thumbs.db
+
+# Log files
+# (This ignores all .csv and .log files inside the logs/ folder,
+# but NOT the folder itself)
+logs/*.csv
+logs/*.log
+
+# IDE files
+.vscode/
+.idea/

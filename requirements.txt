@@ -5,3 +5,4 @@ xgboost
 imblearn
 yfinance
 pytz
+talib

@@ -4,10 +4,11 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score
-from imblearn.over_sampling import SMOTE
 import xgboost as xgb
 import warnings
-import itertools
+from sklearn.calibration import CalibratedClassifierCV
+# --- NEW: Import Logistic Regression ---
+from sklearn.linear_model import LogisticRegression
 
 warnings.filterwarnings('ignore')
 
@@ -15,95 +16,107 @@ DATA_DIR = "data/processed"
 MODELS_DIR = "models"
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-TICKERS = ["CL=F"] # FOCUSED
+TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
+REGIME_SUFFIXES = ["", "_low_vix", "_high_vix"]
 
-# Anti-Overfitting Grid (36 tests)
-PARAM_GRID = {
-    'max_depth': [3, 4, 5],
-    'learning_rate': [0.01, 0.02],
-    'subsample': [0.8],
-    'min_child_weight': [1, 5, 10],
-    'gamma': [0, 0.1]
-}
-
-def load_data(ticker):
-    base = ticker.replace("=", "_").lower()
+def load_data(ticker_base):
+    """
+    Tries to load data for a specific ticker and regime.
+    """
     try:
-        X_train = np.load(os.path.join(DATA_DIR, f"{base}_X_train.npy"))
-        y_train = np.load(os.path.join(DATA_DIR, f"{base}_y_train.npy"))
-        X_val = np.load(os.path.join(DATA_DIR, f"{base}_X_val.npy"))
-        y_val = np.load(os.path.join(DATA_DIR, f"{base}_y_val.npy"))
-        features = joblib.load(os.path.join(MODELS_DIR, f"{base}_feature_list.joblib"))
+        X_train = np.load(os.path.join(DATA_DIR, f"{ticker_base}_X_train.npy"))
+        y_train = np.load(os.path.join(DATA_DIR, f"{ticker_base}_y_train.npy"))
+        X_val = np.load(os.path.join(DATA_DIR, f"{ticker_base}_X_val.npy"))
+        y_val = np.load(os.path.join(DATA_DIR, f"{ticker_base}_y_val.npy"))
+        features = joblib.load(os.path.join(MODELS_DIR, f"{ticker_base}_feature_list.joblib"))
         return (X_train, y_train, X_val, y_val, features)
-    except FileNotFoundError as e:
-        print(f"  Error loading data for {ticker}: {e}")
+    except FileNotFoundError:
         return None
 
-def apply_smote(X, y):
-    if y.size == 0: return X, y
-    print(f"  Before SMOTE: {np.bincount(y)}")
-    if np.min(np.bincount(y)) < 2:
-        print("  Skipping SMOTE: not enough samples in minority class.")
-        return X, y
-    sm = SMOTE(random_state=42)
-    X_res, y_res = sm.fit_resample(X, y)
-    print(f"  After SMOTE: {np.bincount(y_res)}")
-    return X_res, y_res
-
 for ticker in TICKERS:
-    print(f"\n=== TRAINING {ticker} ===")
-    data = load_data(ticker)
-    if data is None: continue
-    X_train, y_train, X_val, y_val, features = data
     base = ticker.replace("=", "_").lower()
-
-    if y_train.size == 0:
-        print("  Skipping XGB: No training data.")
-        continue
-
-    print("  Applying SMOTE to training data...")
-    X_train_bal, y_train_bal = apply_smote(X_train, y_train)
     
-    best_f1 = -1.0
-    best_model = None
-    best_params = {}
-
-    keys, values = zip(*PARAM_GRID.items())
-    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-    
-    print(f"  Starting robust hyperparameter tuning ({len(param_combinations)} combinations)...")
-
-    for params in param_combinations:
-        print(f"    Testing params: {params}", end="")
+    found_model_for_ticker = False
+    for suffix in REGIME_SUFFIXES:
+        regime_base = f"{base}{suffix}"
         
-        xgb_model = xgb.XGBClassifier(
-            **params,
+        data = load_data(regime_base)
+        if data is None:
+            continue
+            
+        print(f"\n=== TRAINING {regime_base} ===")
+        found_model_for_ticker = True
+        
+        X_train, y_train, X_val, y_val, features = data
+
+        if y_train.size == 0 or len(np.unique(y_train)) < 2:
+            print("  Skipping: No training data or only one class present.")
+            continue
+
+        # --- Calculate scale_pos_weight for XGBoost ---
+        count_neg = np.sum(y_train == 0)
+        count_pos = np.sum(y_train == 1)
+        scale_pos_weight = count_neg / (count_pos + 1e-8)
+        
+        # --- 1. Train XGBoost Model ---
+        print(f"  Using scale_pos_weight: {scale_pos_weight:.2f} (for XGB)")
+        xgb_model_raw = xgb.XGBClassifier(
             n_estimators=500,
+            max_depth=4,
+            learning_rate=0.05,
+            subsample=0.8,
             colsample_bytree=0.8,
             eval_metric="logloss",
             random_state=42,
             n_jobs=-1,
-            early_stopping_rounds=20
+            early_stopping_rounds=20,
+            scale_pos_weight=scale_pos_weight, 
+            reg_alpha=0.5,
+            reg_lambda=1.0
         )
         
-        xgb_model.fit(X_train_bal, y_train_bal, eval_set=[(X_val, y_val)], verbose=False)
+        print("  Training raw XGBoost model...")
+        xgb_model_raw.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         
-        y_pred_val = xgb_model.predict(X_val)
-        f1_val = f1_score(y_val, y_pred_val, pos_label=1, zero_division=0)
-        print(f" -> F1: {f1_val:.4f}")
+        print("  Calibrating XGB probabilities on validation set...")
+        xgb_calibrated = CalibratedClassifierCV(
+            xgb_model_raw, 
+            method='sigmoid', 
+            cv='prefit'
+        )
+        xgb_calibrated.fit(X_val, y_val)
         
-        if f1_val > best_f1:
-            best_f1 = f1_val
-            best_model = xgb_model
-            best_params = params
-            print(f"    🚀 New Best F1: {f1_val:.4f} (at iteration {best_model.best_iteration})")
+        joblib.dump(xgb_calibrated, os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib"))
+        print(f"  ✅ Calibrated XGB model saved for {regime_base}.")
 
-    if best_model:
-        print(f"\n  ✅ Best F1-Score: {best_f1*100:.2f}%")
-        print(f"  ✅ Best Params: {best_params}")
-        joblib.dump(best_model, os.path.join(MODELS_DIR, f"{base}_xgb_model.joblib"))
-        print(f"  🧠 Best XGBoost model saved for {ticker}.")
-    else:
-        print("  Tuning failed, no model was saved.")
+        # --- 2. Train Logistic Regression Model ---
+        print("  Training raw Logistic Regression model...")
+        # Use class_weight='balanced' as the LR equivalent of scale_pos_weight
+        lr_model_raw = LogisticRegression(
+            solver='liblinear', 
+            class_weight='balanced', 
+            random_state=42,
+            C=0.1 # Add some regularization
+        )
+        # We train the LR model on the same (scaled) data
+        lr_model_raw.fit(X_train, y_train) 
+        
+        print("  Calibrating LR probabilities on validation set...")
+        # We must pre-fit the calibrator for LR on the validation set
+        lr_calibrated = CalibratedClassifierCV(
+            lr_model_raw, 
+            method='sigmoid', 
+            cv='prefit' # Use 'prefit' as we've already trained it
+        )
+        # Fit the calibrator
+        lr_calibrated.fit(X_val, y_val)
 
-print("\n✅ All models tuned and saved successfully.")
+        joblib.dump(lr_calibrated, os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
+        print(f"  ✅ Calibrated LR model saved for {regime_base}.")
+        # --- END NEW ---
+
+    if not found_model_for_ticker:
+        print(f"\n--- No processed data files found for ticker {ticker} ---")
+
+
+print("\n✅ All models trained and calibrated successfully.")
