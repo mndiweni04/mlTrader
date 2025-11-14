@@ -20,10 +20,7 @@ models/*.joblib
 .DS_Store
 Thumbs.db
 
-# Log files
-# (This ignores all .csv and .log files inside the logs/ folder,
-# but NOT the folder itself)
-logs/*.csv
+# Log files\
 logs/*.log
 
 # IDE files
