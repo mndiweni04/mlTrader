@@ -3,11 +3,17 @@ name: MLTrader Daily Run
 on:
   workflow_dispatch: # Allows manual running
   schedule:
-    - cron: '30 21 * * 1-5' # 9:30 PM UTC Mon-Fri
+    # Runs at 06:00 UTC (which is 08:00 SAST), Monday-Friday
+    - cron: '0 6 * * 1-5'
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+
+    # --- NEW: Give the job permissions to write back to the repo ---
+    permissions:
+      contents: write
+    # --- END NEW ---
 
     steps:
     - name: Check out repository
@@ -45,7 +51,20 @@ jobs:
         SENDER_APP_PASSWORD: ${{ secrets.SENDER_APP_PASSWORD }}
         RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
       run: |
-        # Make the new bash script executable
+        # Make the bash script executable
         chmod +x ./retrain_pipeline.sh
-        # Run the new bash script
+        # Run the bash script
         ./retrain_pipeline.sh
+        
+    # --- *** THIS IS THE NEW STEP *** ---
+    # 3. Commit and push the updated trade log
+    - name: Commit and Push Trade Log
+      run: |
+        git config --global user.name "GitHub Action Bot"
+        git config --global user.email "action-bot@github.com"
+        git pull # Pull any recent changes first
+        git add logs/live_trades_log.csv
+        # Only commit if there are changes
+        git diff-index --quiet HEAD || git commit -m "Bot: Update live trade log"
+        git push
+    # --- *** END NEW STEP *** ---
