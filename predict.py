@@ -11,7 +11,7 @@ from datetime import datetime
 import pytz
 import yfinance as yf
 import time
-import math # <-- NEW: For floor()
+import math
 
 try:
     import tensorflow as tf
@@ -22,14 +22,21 @@ except (ImportError, AttributeError):
 # --- 1. USER CONFIGURATION ---
 ACCOUNT_CAPITAL = 50000.0 
 RISK_PER_TRADE_PCT = 0.01   # 1% risk per trade
-MODEL_VERSION = "v3.1"      # <-- NEW: Track model version
+MODEL_VERSION = "v3.2"      # Bumped version
 # -----------------------------
 
-# --- 2. Contract Specs (Point Value) ---
+# --- 2. Contract Specs (Point Value $) ---
+# CRITICAL: This is the $ value of a 1.0 movement in price
 TICKER_SPECS = {
-    "CL=F": 1000.0, "GC=F": 100.0, "SI=F": 5000.0, "NG=F": 10000.0,
-    "ZC=F": 50.0,   "ES=F": 50.0,  "NQ=F": 20.0,
-    "EURUSD=X": 100000.0, "JPYUSD=X": 100000.0,
+    "CL=F": 1000.0,  # Crude: $1000 per $1.00 move
+    "GC=F": 100.0,   # Gold: $100 per $1.00 move
+    "SI=F": 5000.0,  # Silver: $5000 per $1.00 move
+    "NG=F": 10000.0, # Nat Gas: $10,000 per $1.00 move
+    "ZC=F": 50.0,    # Corn: $50 per $1.00 move
+    "ES=F": 50.0,    # ES: $50 per 1.00 points
+    "NQ=F": 20.0,    # NQ: $20 per 1.00 points
+    "EURUSD=X": 100000.0, # Forex: $10 per pip (approx on 1.0 move)
+    "JPYUSD=X": 100000.0, 
 }
 
 TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
@@ -39,7 +46,10 @@ TICKERS_TO_SPLIT = ["ES=F", "NQ=F", "NG=F", "JPYUSD=X"]
 INTERVAL = "1d"
 DATA_PERIOD = "250d" 
 MODELS_DIR = "models"
-ATR_MULTIPLIER = 1.5
+
+# --- FIX 4: ATR-Based Exits ---
+ATR_SL_MULT = 1.5
+ATR_TP_MULT = 2.5
 
 DEFAULT_CONF_THRESH_BULLISH = 0.60
 DEFAULT_CONF_THRESH_BEARISH = 0.40
@@ -74,11 +84,6 @@ def compute_obv(close, volume):
     obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
     return obv
 
-def calculate_position_size(probability, min_thresh, max_thresh=1.0):
-    if probability < min_thresh: return 0.0
-    size = (probability - min_thresh) / (max_thresh - min_thresh)
-    return np.clip(size, 0.0, 1.0) 
-
 def fetch_live(ticker):
     for attempt in range(3):
         try:
@@ -87,7 +92,6 @@ def fetch_live(ticker):
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df.columns = [c.title() for c in df.columns]
             
-            # Normalization
             if "Adj Close" in df.columns and "Close" not in df.columns: df["Close"] = df["Adj Close"]
             if 'Open' not in df.columns: df['Open'] = df['Close']
             if 'High' not in df.columns: df['High'] = df['Close']
@@ -124,7 +128,6 @@ def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
     if 'Volume' in df.columns and df['Volume'].sum() > 0:
         features_df['OBV'] = compute_obv(close, df['Volume'])
     
-    # Macro Features
     if "^VIX" in macro_data:
         vix_close = macro_data["^VIX"]['Close'].reindex(df.index, method='ffill')
         features_df['VIX_Close'] = vix_close
@@ -180,7 +183,7 @@ def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
 if __name__ == "__main__":
     now = datetime.now(pytz.timezone("Africa/Johannesburg"))
     print("\n" + "="*70)
-    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3.1 - SAFETY FIRST") 
+    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3.2 - RISK FIXED") 
     print("="*70)
     print(f"Generated (SAST): {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
     print(f"Model Version: {MODEL_VERSION}")
@@ -198,14 +201,12 @@ if __name__ == "__main__":
     sp_close = sp_df['Close'].pct_change() if sp_df is not None else None
     
     current_vix_regime = 0 
+    vix_val = 0
     if "^VIX" in live_macro_data:
         try:
-            last_vix_close = live_macro_data["^VIX"]['Close'].iloc[-1]
-            if last_vix_close > 20:
-                current_vix_regime = 1
-                print(f"  Current VIX: {last_vix_close:.2f}. Using HIGH-VIX models.")
-            else:
-                print(f"  Current VIX: {last_vix_close:.2f}. Using LOW-VIX models.")
+            vix_val = live_macro_data["^VIX"]['Close'].iloc[-1]
+            if vix_val > 20: current_vix_regime = 1
+            print(f"  Current VIX: {vix_val:.2f}. Using {'HIGH' if current_vix_regime else 'LOW'}-VIX models.")
         except Exception: pass
 
     for t in TICKERS:
@@ -274,90 +275,75 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  Error loading chosen model: {e}. Skipping."); continue
 
+        # --- FIX 5: MACRO VETO ---
+        # If VIX is extremely high (>28), reduce bullish confidence
+        if vix_val > 28 and prob_bullish > 0.5:
+            print("  [Macro Veto] Extreme VIX > 28. Reducing bullish confidence by 15%.")
+            prob_bullish = prob_bullish * 0.85
+
         model_name = f"{chosen_model_type.upper()} ({regime_base})"
         last_close = df_feat.iloc[-1]['Close'] 
         
         print(f"  Chosen model: {model_name}")
         
-        current_rr_ratio = 1.5 
-        raw_confidence = 0.0
-        confidence_size_factor = 0.0 
+        direction = "HOLD"
+        if prob_bullish >= conf_thresh_bullish: direction = "BULLISH"
+        elif prob_bullish <= conf_thresh_bearish: direction = "BEARISH"
 
-        if prob_bullish >= conf_thresh_bullish: 
-            direction = "BULLISH"
-            raw_confidence = prob_bullish
-            confidence_pct = raw_confidence * 100
-            confidence_size_factor = calculate_position_size(raw_confidence, conf_thresh_bullish) 
-            
-            if raw_confidence >= 0.75: current_rr_ratio = 2.5
-            else: current_rr_ratio = 1.5
-
+        if direction != "HOLD":
             print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
-            print(f"  Confidence: {confidence_pct:.2f}% (>= {conf_thresh_bullish*100:.0f}%)")
-        
-        elif prob_bullish <= conf_thresh_bearish: 
-            direction = "BEARISH"
-            raw_confidence = 1 - prob_bullish
-            confidence_pct = raw_confidence * 100
-            min_bear_conf = 1.0 - conf_thresh_bearish 
-            confidence_size_factor = calculate_position_size(raw_confidence, min_bear_conf)
-            
-            if raw_confidence >= 0.75: current_rr_ratio = 2.5
-            else: current_rr_ratio = 1.5
+            conf_pct = prob_bullish if direction == "BULLISH" else (1 - prob_bullish)
+            print(f"  Confidence: {conf_pct*100:.2f}%")
 
-            print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
-            print(f"  Confidence: {confidence_pct:.2f}% (>= {(1-conf_thresh_bearish)*100:.0f}%)")
-        
-        else:
-            direction = "HOLD"
-            print(f"  Prediction (5-Day Horizon): {direction} [HOLD / NO SIGNAL]")
-            print(f"  (Prob: {prob_bullish*100:.1f}%, inside {conf_thresh_bearish*100:.0f}-{conf_thresh_bullish*100:.0f} dead-zone)")
+            last_atr = df_feat.iloc[-1].get('ATR_current', np.nan)
+            if np.isnan(last_atr) or last_atr <= 0:
+                print("  Error: Invalid ATR. Skipping.")
+                print("-" * 30); continue
 
-        print(f"  Current Price: {last_close:.6f}")
-
-        last_atr = df_feat.iloc[-1].get('ATR_current', np.nan) 
-        if not np.isnan(last_atr) and last_atr > 0 and direction != "HOLD":
-            atr_amount = last_atr * ATR_MULTIPLIER
+            # --- FIX 3 & 4: Standardized Risk & ATR Targets ---
+            atr_sl_dist = last_atr * ATR_SL_MULT
+            atr_tp_dist = last_atr * ATR_TP_MULT
             
             if direction == "BULLISH":
-                atr_sl = last_close - atr_amount
-                atr_tp = last_close + (atr_amount * current_rr_ratio) 
-            else: # BEARISH
-                atr_sl = last_close + atr_amount
-                atr_tp = last_close - (atr_amount * current_rr_ratio)
+                sl_price = last_close - atr_sl_dist
+                tp_price = last_close + atr_tp_dist
+            else:
+                sl_price = last_close + atr_sl_dist
+                tp_price = last_close - atr_tp_dist
             
-            print(f"  Suggested ATR SL ({ATR_MULTIPLIER}x): {atr_sl:.6f}")
-            print(f"  Suggested ATR TP ({current_rr_ratio}x R/R): {atr_tp:.6f}")
+            print(f"  Suggested ATR SL ({ATR_SL_MULT}x): {sl_price:.4f}")
+            print(f"  Suggested ATR TP ({ATR_TP_MULT}x): {tp_price:.4f}")
             
             try:
                 dollar_per_point = TICKER_SPECS.get(t)
                 if dollar_per_point is None:
-                    print(f"  Suggested Lots: N/A (No TICKER_SPECS entry for {t})")
+                    print(f"  Suggested Lots: N/A (No TICKER_SPECS for {t})")
                 else:
-                    risk_dollars_per_full_trade = ACCOUNT_CAPITAL * RISK_PER_TRADE_PCT
-                    risk_per_contract = atr_amount * dollar_per_point
+                    # RISK CALCULATION
+                    risk_dollars = ACCOUNT_CAPITAL * RISK_PER_TRADE_PCT
+                    # Risk per contract = Stop Distance * Value per Point
+                    risk_per_contract = atr_sl_dist * dollar_per_point
                     
                     if risk_per_contract <= 0:
-                        print("  Suggested Lots: N/A (ATR risk is zero)")
+                         final_lots = 0.0
                     else:
-                        full_position_lots = risk_dollars_per_full_trade / risk_per_contract
-                        final_lots = full_position_lots * confidence_size_factor
-                        actual_risk = risk_dollars_per_full_trade * confidence_size_factor
-                        print(f"  Risk Amount: ${actual_risk:.2f}")
-
-                        unit = "Contracts" if "=F" in t else "Std. Lots"
-                        # --- FIX: Enforce Integer Lots for Futures ---
+                        # Floor ensures we never exceed risk
+                        raw_lots = risk_dollars / risk_per_contract
+                        
+                        # Futures must be integers, FX can be float
                         if "=F" in t:
-                            final_lots = math.floor(final_lots)
+                            final_lots = math.floor(raw_lots)
                         else:
-                            final_lots = round(final_lots, 2)
-                        # ---------------------------------------------
-                        print(f"  Suggested Lots: {final_lots} {unit}")
+                            final_lots = round(raw_lots, 2)
+                    
+                    print(f"  Risk Amount: ${risk_dollars:.2f} (Max)")
+                    unit = "Contracts" if "=F" in t else "Std. Lots"
+                    print(f"  Suggested Lots: {final_lots} {unit}")
             except Exception as e:
                 print(f"  Error in lot calculation: {e}")
         else:
-            print("  ATR/TP/SL: N/A (Holding)")
-            print("  Suggested Lots: 0.00 Contracts") 
+            print(f"  Prediction: HOLD (Prob: {prob_bullish*100:.1f}%)")
+            print("  Suggested Lots: 0.00 Contracts")
 
         print("-" * 30)
 

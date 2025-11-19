@@ -3,7 +3,7 @@ import os
 import csv
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import time
 import numpy as np 
@@ -24,9 +24,7 @@ def fetch_current_price(ticker):
         if df is None or df.empty: return None, None
         latest = df.iloc[-1]
         price_date = latest.name.strftime('%Y-%m-%d')
-        price_object = latest['Close']
-        price_float = price_object.item() 
-        return price_float, price_date
+        return latest['Close'].item(), price_date
     except Exception as e:
         print(f"  [Monitor] Error fetching price for {ticker}: {e}")
         return None, None
@@ -46,8 +44,7 @@ def calculate_pnl(direction, entry_price, close_price, lots, dollar_per_point):
 
 def monitor_open_trades():
     if not os.path.exists(TRADES_LOG_FILE):
-        print("[Monitor] No trade log file found.")
-        return
+        print("[Monitor] No trade log file found."); return
 
     print("[Monitor] Checking open trades...")
     trades = []
@@ -59,10 +56,13 @@ def monitor_open_trades():
             if reader.fieldnames: fieldnames = reader.fieldnames
             for row in reader: trades.append(row)
     except Exception as e:
-        print(f"  [Monitor] Error reading log file: {e}"); return
+        print(f"  [Monitor] Error reading log: {e}"); return
 
     if not trades: return
 
+    # --- FIX 2: Strict Open Check ---
+    # Only monitor items that are strictly 'OPEN'. 
+    # SKIPPED trades are ignored safely here.
     open_trades = [row for row in trades if row['status'] == 'OPEN']
     open_tickers = list(set([row['ticker'] for row in open_trades]))
     
@@ -108,7 +108,6 @@ def monitor_open_trades():
             
         if close_reason:
             closed_count += 1
-            # New PnL calculation logic requiring contracts/lots
             dollar_per_point = TICKER_SPECS.get(ticker, 0.0)
             row['status'] = f"CLOSED ({close_reason})"
             row['close_date'] = current_price_date
