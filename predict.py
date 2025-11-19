@@ -10,7 +10,8 @@ import pandas as pd
 from datetime import datetime
 import pytz
 import yfinance as yf
-import time # <-- *** THIS IS THE FIX ***
+import time
+import math # <-- NEW: For floor()
 
 try:
     import tensorflow as tf
@@ -18,24 +19,18 @@ try:
 except (ImportError, AttributeError):
     pass
 
-# --- 1. *** USER SETTINGS: EDIT THESE *** ---
-ACCOUNT_CAPITAL = 50000.0 # Example: $50,000
-RISK_PER_TRADE_PCT = 0.01   # Example: 1% risk per "full" trade
-# --- END USER SETTINGS ---
+# --- 1. USER CONFIGURATION ---
+ACCOUNT_CAPITAL = 50000.0 
+RISK_PER_TRADE_PCT = 0.01   # 1% risk per trade
+MODEL_VERSION = "v3.1"      # <-- NEW: Track model version
+# -----------------------------
 
-# --- 2. Contract/Lot Specifications (Dollar value of a 1.0 point move) ---
+# --- 2. Contract Specs (Point Value) ---
 TICKER_SPECS = {
-    "CL=F": 1000.0,  # Crude Oil: $1000 per $1.00 move
-    "GC=F": 100.0,   # Gold: $100 per $1.00 move
-    "SI=F": 5000.0,  # Silver: $5000 per $1.00 move
-    "NG=F": 10000.0, # Natural Gas: $10,000 per $1.00 move
-    "ZC=F": 50.0,    # Corn: $50 per $1.00 move
-    "ES=F": 50.0,    # E-mini S&P: $50 per $1.00 move
-    "NQ=F": 20.0,    # E-mini NASDAQ: $20 per $1.00 move
-    "EURUSD=X": 100000.0, # Forex: 1 Standard Lot = 100,000 units
-    "JPYUSD=X": 100000.0, # Forex: 1 Standard Lot = 100,000 units
+    "CL=F": 1000.0, "GC=F": 100.0, "SI=F": 5000.0, "NG=F": 10000.0,
+    "ZC=F": 50.0,   "ES=F": 50.0,  "NQ=F": 20.0,
+    "EURUSD=X": 100000.0, "JPYUSD=X": 100000.0,
 }
-# --- END SPECS ---
 
 TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
 MACRO_TICKERS = ["DX=F", "TLT", "^VIX", "XLE", "ZS=F", "ZW=F", "XLF", "XLK"]
@@ -79,27 +74,21 @@ def compute_obv(close, volume):
     obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
     return obv
 
-# --- Position Sizing Function ---
 def calculate_position_size(probability, min_thresh, max_thresh=1.0):
-    if probability < min_thresh:
-        return 0.0
-    
+    if probability < min_thresh: return 0.0
     size = (probability - min_thresh) / (max_thresh - min_thresh)
     return np.clip(size, 0.0, 1.0) 
 
 def fetch_live(ticker):
-    # --- Add retry logic ---
-    for attempt in range(3): # Try 3 times
+    for attempt in range(3):
         try:
-            df = yf.download(ticker, period=DATA_PERIOD, interval=INTERVAL, progress=False, auto_adjust=False, timeout=10) # 10-sec timeout
-            if df is None or df.empty: 
-                raise Exception("No data returned")
-                
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            df = yf.download(ticker, period=DATA_PERIOD, interval=INTERVAL, progress=False, auto_adjust=False, timeout=10)
+            if df is None or df.empty: raise Exception("No data returned")
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df.columns = [c.title() for c in df.columns]
-            if "Adj Close" in df.columns and "Close" not in df.columns:
-                df["Close"] = df["Adj Close"]
+            
+            # Normalization
+            if "Adj Close" in df.columns and "Close" not in df.columns: df["Close"] = df["Adj Close"]
             if 'Open' not in df.columns: df['Open'] = df['Close']
             if 'High' not in df.columns: df['High'] = df['Close']
             if 'Low' not in df.columns: df['Low'] = df['Close']
@@ -108,44 +97,34 @@ def fetch_live(ticker):
             df.index = pd.to_datetime(df.index)
             if df.index.tz is None: df.index = df.index.tz_localize('UTC')
             else: df.index = df.index.tz_convert('UTC')
-            
-            return df # Success
-        
+            return df 
         except Exception as e:
             print(f"  Fetch failed for {ticker} (Attempt {attempt+1}/3): {e}")
-            time.sleep(2) # Wait 2 seconds before retrying
-            
-    print(f"  --- Giving up on {ticker} after 3 attempts. ---")
-    return None # Return None after all attempts fail
+            time.sleep(2)
+    return None
 
 def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
     df = df.copy().sort_index()
-    
     close = df['Close']
     ticker_ret = close.pct_change() 
     features_df = pd.DataFrame(index=df.index)
     
-    # Trend
     features_df['MA5'] = close.rolling(5).mean()
     features_df['MA20'] = close.rolling(20).mean()
     features_df['MA50'] = close.rolling(50).mean()
     features_df['MA200'] = close.rolling(200).mean()
     features_df['MA_diff'] = features_df['MA50'] - features_df['MA200']
     
-    # Volatility
     features_df['ATR'] = compute_atr(df, n=14)
     features_df['BB_Width'] = compute_bb_width(close, n=20)
-    
-    # Momentum
     features_df['RSI14'] = compute_rsi(close, period=14)
     features_df['ROC10'] = compute_roc(close, n=10) 
     features_df['MACD'], features_df['MACD_signal'], features_df['MACD_hist'] = compute_macd(close)
     
-    # Volume
     if 'Volume' in df.columns and df['Volume'].sum() > 0:
         features_df['OBV'] = compute_obv(close, df['Volume'])
     
-    # --- Macro Features ---
+    # Macro Features
     if "^VIX" in macro_data:
         vix_close = macro_data["^VIX"]['Close'].reindex(df.index, method='ffill')
         features_df['VIX_Close'] = vix_close
@@ -193,7 +172,6 @@ def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
         features_df['Corr_SP500'] = ticker_ret.rolling(50).corr(sp_close_reindexed)
     
     features_df = features_df.shift(1)
-    
     features_df['Close'] = df['Close']
     features_df['ATR_current'] = compute_atr(df, n=14) 
     
@@ -202,9 +180,10 @@ def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
 if __name__ == "__main__":
     now = datetime.now(pytz.timezone("Africa/Johannesburg"))
     print("\n" + "="*70)
-    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3 - ENSEMBLE AWARE") 
+    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3.1 - SAFETY FIRST") 
     print("="*70)
     print(f"Generated (SAST): {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
+    print(f"Model Version: {MODEL_VERSION}")
 
     print("Fetching live macro data...")
     live_macro_data = {}
@@ -213,8 +192,6 @@ if __name__ == "__main__":
         if df_m is not None:
             df_m['PctChange'] = df_m['Close'].pct_change()
             live_macro_data[mt] = df_m
-        else:
-            print(f"  Warning: Failed to fetch live macro data for {mt}")
     print("Macro data fetch complete.\n")
             
     sp_df = fetch_live("ES=F")
@@ -229,24 +206,15 @@ if __name__ == "__main__":
                 print(f"  Current VIX: {last_vix_close:.2f}. Using HIGH-VIX models.")
             else:
                 print(f"  Current VIX: {last_vix_close:.2f}. Using LOW-VIX models.")
-        except Exception as e:
-            print(f"  Warning: Could not determine VIX regime. Defaulting to LOW. Error: {e}")
-    else:
-        print("  Warning: VIX data not found. Defaulting to LOW-VIX models.")
+        except Exception: pass
 
     for t in TICKERS:
         print(f"--- {t} ---")
         base = t.replace('=','_').lower()
-        
-        # --- START: DYNAMIC MODEL/FILE SELECTION ---
         suffix = ""
         if t in TICKERS_TO_SPLIT:
-            if current_vix_regime == 1:
-                suffix = "_high_vix"
-                print("  (VIX REGIME: HIGH)")
-            else:
-                suffix = "_low_vix"
-                print("  (VIX REGIME: LOW)")
+            suffix = "_high_vix" if current_vix_regime == 1 else "_low_vix"
+            print(f"  (VIX REGIME: {'HIGH' if current_vix_regime else 'LOW'})")
         
         regime_base = f"{base}{suffix}"
         
@@ -257,45 +225,36 @@ if __name__ == "__main__":
             conf_thresh_bullish = model_choice['thresholds']['bull']
             conf_thresh_bearish = model_choice['thresholds']['bear']
             print(f"  Loaded dynamic choice: Model={chosen_model_type}, Thresh={conf_thresh_bullish*100:.0f}% / {conf_thresh_bearish*100:.0f}%")
-        except Exception as e:
-            print(f"  Warning: Could not load model choice for '{regime_base}' ({e}). Holding.")
-            print("-" * 30)
+        except Exception:
+            print(f"  Warning: Could not load model choice for '{regime_base}'. Holding.")
             continue
             
         if chosen_model_type == 'none':
             print(f"  No profitable model found for {regime_base}. Holding.")
-            print("-" * 30)
-            continue
+            print("-" * 30); continue
             
         scaler_file = os.path.join(MODELS_DIR, f"{regime_base}_scaler.joblib")
         feature_file = os.path.join(MODELS_DIR, f"{regime_base}_feature_list.joblib")
         
         if not all(os.path.exists(f) for f in [scaler_file, feature_file]):
-            print(f"  Missing scaler/features for '{regime_base}'. Check if model was trained.")
-            print("-" * 30)
-            continue
+            print(f"  Missing scaler/features for '{regime_base}'."); continue
             
         scaler = joblib.load(scaler_file)
         features = joblib.load(feature_file)
         
         df = fetch_live(t)
         if df is None or df.empty:
-            print(f"  No live data for {t}.")
-            print("-" * 30)
-            continue
+            print(f"  No live data for {t}."); print("-" * 30); continue
 
         df_feat = engineer_live(df, t, sp_close, live_macro_data)
-        
         for f in features:
-            if f not in df_feat.columns:
-                df_feat[f] = 0.0
+            if f not in df_feat.columns: df_feat[f] = 0.0
         
         df_feat_ordered = df_feat[features]
         latest = df_feat_ordered.iloc[-1]  
         
         if latest.isnull().any():
-            print("  Latest data has NaNs (from lagging/MAs), cannot predict.")
-            continue
+            print("  Latest data has NaNs (from lagging/MAs), cannot predict."); continue
             
         X_latest = latest.values.reshape(1, -1)
         X_scaled = scaler.transform(X_latest)
@@ -305,23 +264,15 @@ if __name__ == "__main__":
             if chosen_model_type == 'xgb':
                 model = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib"))
                 prob_bullish = model.predict_proba(X_scaled)[0][1]
-            
             elif chosen_model_type == 'lr':
                 model = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
                 prob_bullish = model.predict_proba(X_scaled)[0][1]
-            
             elif chosen_model_type == 'ensemble':
                 model_xgb = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib"))
                 model_lr = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
-                
-                prob_xgb = model_xgb.predict_proba(X_scaled)[0][1]
-                prob_lr = model_lr.predict_proba(X_scaled)[0][1]
-                prob_bullish = (prob_xgb + prob_lr) / 2.0
-                
+                prob_bullish = (model_xgb.predict_proba(X_scaled)[0][1] + model_lr.predict_proba(X_scaled)[0][1]) / 2.0
         except Exception as e:
-            print(f"  Error loading chosen model file: {e}. Skipping.")
-            print("-" * 30)
-            continue
+            print(f"  Error loading chosen model: {e}. Skipping."); continue
 
         model_name = f"{chosen_model_type.upper()} ({regime_base})"
         last_close = df_feat.iloc[-1]['Close'] 
@@ -338,10 +289,8 @@ if __name__ == "__main__":
             confidence_pct = raw_confidence * 100
             confidence_size_factor = calculate_position_size(raw_confidence, conf_thresh_bullish) 
             
-            if raw_confidence >= 0.75:
-                current_rr_ratio = 2.5
-            else:
-                current_rr_ratio = 1.5
+            if raw_confidence >= 0.75: current_rr_ratio = 2.5
+            else: current_rr_ratio = 1.5
 
             print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
             print(f"  Confidence: {confidence_pct:.2f}% (>= {conf_thresh_bullish*100:.0f}%)")
@@ -350,14 +299,11 @@ if __name__ == "__main__":
             direction = "BEARISH"
             raw_confidence = 1 - prob_bullish
             confidence_pct = raw_confidence * 100
-            
             min_bear_conf = 1.0 - conf_thresh_bearish 
             confidence_size_factor = calculate_position_size(raw_confidence, min_bear_conf)
             
-            if raw_confidence >= 0.75:
-                current_rr_ratio = 2.5
-            else:
-                current_rr_ratio = 1.5
+            if raw_confidence >= 0.75: current_rr_ratio = 2.5
+            else: current_rr_ratio = 1.5
 
             print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
             print(f"  Confidence: {confidence_pct:.2f}% (>= {(1-conf_thresh_bearish)*100:.0f}%)")
@@ -376,13 +322,12 @@ if __name__ == "__main__":
             if direction == "BULLISH":
                 atr_sl = last_close - atr_amount
                 atr_tp = last_close + (atr_amount * current_rr_ratio) 
-                print(f"  Suggested ATR SL ({ATR_MULTIPLIER}x): {atr_sl:.6f}")
-                print(f"  Suggested ATR TP ({current_rr_ratio}x R/R): {atr_tp:.6f}")
             else: # BEARISH
                 atr_sl = last_close + atr_amount
                 atr_tp = last_close - (atr_amount * current_rr_ratio)
-                print(f"  Suggested ATR SL ({ATR_MULTIPLIER}x): {atr_sl:.6f}")
-                print(f"  Suggested ATR TP ({current_rr_ratio}x R/R): {atr_tp:.6f}")
+            
+            print(f"  Suggested ATR SL ({ATR_MULTIPLIER}x): {atr_sl:.6f}")
+            print(f"  Suggested ATR TP ({current_rr_ratio}x R/R): {atr_tp:.6f}")
             
             try:
                 dollar_per_point = TICKER_SPECS.get(t)
@@ -397,9 +342,17 @@ if __name__ == "__main__":
                     else:
                         full_position_lots = risk_dollars_per_full_trade / risk_per_contract
                         final_lots = full_position_lots * confidence_size_factor
-                        
+                        actual_risk = risk_dollars_per_full_trade * confidence_size_factor
+                        print(f"  Risk Amount: ${actual_risk:.2f}")
+
                         unit = "Contracts" if "=F" in t else "Std. Lots"
-                        print(f"  Suggested Lots: {final_lots:.2f} {unit}")
+                        # --- FIX: Enforce Integer Lots for Futures ---
+                        if "=F" in t:
+                            final_lots = math.floor(final_lots)
+                        else:
+                            final_lots = round(final_lots, 2)
+                        # ---------------------------------------------
+                        print(f"  Suggested Lots: {final_lots} {unit}")
             except Exception as e:
                 print(f"  Error in lot calculation: {e}")
         else:
