@@ -3,17 +3,14 @@ name: MLTrader Daily Run
 on:
   workflow_dispatch: # Allows manual running
   schedule:
-    # Runs at 06:00 UTC (which is 08:00 SAST), Monday-Friday
-    - cron: '0 6 * * 1-5'
+    - cron: '0 6 * * 1-5' # 06:00 UTC (08:00 SAST)
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
 
-    # --- NEW: Give the job permissions to write back to the repo ---
     permissions:
       contents: write
-    # --- END NEW ---
 
     steps:
     - name: Check out repository
@@ -24,13 +21,13 @@ jobs:
       with:
         python-version: '3.11'
 
-    # 1. Install the C-library build dependencies
+    # 1. Install build dependencies
     - name: Install build-essential
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential wget
 
-    # 2. Download and build TA-Lib from source
+    # 2. Install TA-Lib C-Library
     - name: Download and Install TA-Lib C-Library
       run: |
         wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
@@ -50,21 +47,19 @@ jobs:
         SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
         SENDER_APP_PASSWORD: ${{ secrets.SENDER_APP_PASSWORD }}
         RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        # --- NEW: Pass Config Secrets ---
+        ACCOUNT_CAPITAL: ${{ secrets.ACCOUNT_CAPITAL }}
+        RISK_PER_TRADE_PCT: ${{ secrets.RISK_PER_TRADE_PCT }}
+        # -------------------------------
       run: |
-        # Make the bash script executable
         chmod +x ./retrain_pipeline.sh
-        # Run the bash script
         ./retrain_pipeline.sh
         
-    # --- *** THIS IS THE NEW STEP *** ---
-    # 3. Commit and push the updated trade log
     - name: Commit and Push Trade Log
       run: |
         git config --global user.name "GitHub Action Bot"
         git config --global user.email "action-bot@github.com"
-        git pull # Pull any recent changes first
+        git pull 
         git add logs/live_trades_log.csv
-        # Only commit if there are changes
         git diff-index --quiet HEAD || git commit -m "Bot: Update live trade log"
         git push
-    # --- *** END NEW STEP *** ---

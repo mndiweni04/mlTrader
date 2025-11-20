@@ -19,24 +19,35 @@ try:
 except (ImportError, AttributeError):
     pass
 
-# --- 1. USER CONFIGURATION ---
-ACCOUNT_CAPITAL = 50000.0 
-RISK_PER_TRADE_PCT = 0.01   # 1% risk per trade
-MODEL_VERSION = "v3.2"      # Bumped version
+# --- 1. CONFIGURATION (READ FROM ENVIRONMENT) ---
+# This removes the hardcoded $50,000. 
+# Set 'ACCOUNT_CAPITAL' and 'RISK_PER_TRADE_PCT' in your GitHub Secrets.
+try:
+    env_cap = os.environ.get("ACCOUNT_CAPITAL")
+    env_risk = os.environ.get("RISK_PER_TRADE_PCT")
+    
+    # Default to $10k / 1% if not set (safe fallback for local testing)
+    ACCOUNT_CAPITAL = float(env_cap) if env_cap else 10000.0
+    RISK_PER_TRADE_PCT = float(env_risk) if env_risk else 0.01
+    
+    if not env_cap:
+        print(f"⚠️ NOTICE: ACCOUNT_CAPITAL not found in env. Using default: ${ACCOUNT_CAPITAL:,.2f}")
+    else:
+        print(f"✅ Loaded Account Capital: ${ACCOUNT_CAPITAL:,.2f}")
+        
+except ValueError:
+    print("❌ Error reading capital/risk from environment. Using defaults.")
+    ACCOUNT_CAPITAL = 10000.0
+    RISK_PER_TRADE_PCT = 0.01
+
+MODEL_VERSION = "v3.3" # Bumped version
 # -----------------------------
 
 # --- 2. Contract Specs (Point Value $) ---
-# CRITICAL: This is the $ value of a 1.0 movement in price
 TICKER_SPECS = {
-    "CL=F": 1000.0,  # Crude: $1000 per $1.00 move
-    "GC=F": 100.0,   # Gold: $100 per $1.00 move
-    "SI=F": 5000.0,  # Silver: $5000 per $1.00 move
-    "NG=F": 10000.0, # Nat Gas: $10,000 per $1.00 move
-    "ZC=F": 50.0,    # Corn: $50 per $1.00 move
-    "ES=F": 50.0,    # ES: $50 per 1.00 points
-    "NQ=F": 20.0,    # NQ: $20 per 1.00 points
-    "EURUSD=X": 100000.0, # Forex: $10 per pip (approx on 1.0 move)
-    "JPYUSD=X": 100000.0, 
+    "CL=F": 1000.0,  "GC=F": 100.0,   "SI=F": 5000.0, "NG=F": 10000.0,
+    "ZC=F": 50.0,    "ES=F": 50.0,    "NQ=F": 20.0,
+    "EURUSD=X": 100000.0, "JPYUSD=X": 100000.0,
 }
 
 TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
@@ -46,10 +57,7 @@ TICKERS_TO_SPLIT = ["ES=F", "NQ=F", "NG=F", "JPYUSD=X"]
 INTERVAL = "1d"
 DATA_PERIOD = "250d" 
 MODELS_DIR = "models"
-
-# --- FIX 4: ATR-Based Exits ---
-ATR_SL_MULT = 1.5
-ATR_TP_MULT = 2.5
+ATR_MULTIPLIER = 1.5
 
 DEFAULT_CONF_THRESH_BULLISH = 0.60
 DEFAULT_CONF_THRESH_BEARISH = 0.40
@@ -83,6 +91,14 @@ def compute_roc(close, n=10):
 def compute_obv(close, volume):
     obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
     return obv
+
+# --- Position Sizing Function ---
+def calculate_position_size(probability, min_thresh, max_thresh=1.0):
+    if probability < min_thresh:
+        return 0.0
+    
+    size = (probability - min_thresh) / (max_thresh - min_thresh)
+    return np.clip(size, 0.0, 1.0) 
 
 def fetch_live(ticker):
     for attempt in range(3):
@@ -183,7 +199,7 @@ def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
 if __name__ == "__main__":
     now = datetime.now(pytz.timezone("Africa/Johannesburg"))
     print("\n" + "="*70)
-    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3.2 - RISK FIXED") 
+    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3.3 - ENV CONFIG") 
     print("="*70)
     print(f"Generated (SAST): {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
     print(f"Model Version: {MODEL_VERSION}")
@@ -275,8 +291,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  Error loading chosen model: {e}. Skipping."); continue
 
-        # --- FIX 5: MACRO VETO ---
-        # If VIX is extremely high (>28), reduce bullish confidence
+        # --- Macro Veto ---
         if vix_val > 28 and prob_bullish > 0.5:
             print("  [Macro Veto] Extreme VIX > 28. Reducing bullish confidence by 15%.")
             prob_bullish = prob_bullish * 0.85
@@ -286,55 +301,71 @@ if __name__ == "__main__":
         
         print(f"  Chosen model: {model_name}")
         
-        direction = "HOLD"
-        if prob_bullish >= conf_thresh_bullish: direction = "BULLISH"
-        elif prob_bullish <= conf_thresh_bearish: direction = "BEARISH"
+        current_rr_ratio = 1.5 
+        raw_confidence = 0.0
+        confidence_size_factor = 0.0 
 
-        if direction != "HOLD":
+        if prob_bullish >= conf_thresh_bullish: 
+            direction = "BULLISH"
+            raw_confidence = prob_bullish
+            confidence_pct = raw_confidence * 100
+            confidence_size_factor = calculate_position_size(raw_confidence, conf_thresh_bullish) 
+            
+            if raw_confidence >= 0.75: current_rr_ratio = 2.5
+            else: current_rr_ratio = 1.5
+
             print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
-            conf_pct = prob_bullish if direction == "BULLISH" else (1 - prob_bullish)
-            print(f"  Confidence: {conf_pct*100:.2f}%")
+            print(f"  Confidence: {confidence_pct:.2f}% (>= {conf_thresh_bullish*100:.0f}%)")
+        
+        elif prob_bullish <= conf_thresh_bearish: 
+            direction = "BEARISH"
+            raw_confidence = 1 - prob_bullish
+            confidence_pct = raw_confidence * 100
+            min_bear_conf = 1.0 - conf_thresh_bearish 
+            confidence_size_factor = calculate_position_size(raw_confidence, min_bear_conf)
+            
+            if raw_confidence >= 0.75: current_rr_ratio = 2.5
+            else: current_rr_ratio = 1.5
 
-            last_atr = df_feat.iloc[-1].get('ATR_current', np.nan)
-            if np.isnan(last_atr) or last_atr <= 0:
-                print("  Error: Invalid ATR. Skipping.")
-                print("-" * 30); continue
+            print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
+            print(f"  Confidence: {confidence_pct:.2f}% (>= {(1-conf_thresh_bearish)*100:.0f}%)")
+        
+        else:
+            direction = "HOLD"
+            print(f"  Prediction (5-Day Horizon): {direction} [HOLD / NO SIGNAL]")
+            print(f"  (Prob: {prob_bullish*100:.1f}%, inside {conf_thresh_bearish*100:.0f}-{conf_thresh_bullish*100:.0f} dead-zone)")
 
-            # --- FIX 3 & 4: Standardized Risk & ATR Targets ---
-            atr_sl_dist = last_atr * ATR_SL_MULT
-            atr_tp_dist = last_atr * ATR_TP_MULT
+        print(f"  Current Price: {last_close:.6f}")
+
+        last_atr = df_feat.iloc[-1].get('ATR_current', np.nan) 
+        if not np.isnan(last_atr) and last_atr > 0 and direction != "HOLD":
+            atr_amount = last_atr * ATR_MULTIPLIER
             
             if direction == "BULLISH":
-                sl_price = last_close - atr_sl_dist
-                tp_price = last_close + atr_tp_dist
-            else:
-                sl_price = last_close + atr_sl_dist
-                tp_price = last_close - atr_tp_dist
+                atr_sl = last_close - atr_amount
+                atr_tp = last_close + (atr_amount * current_rr_ratio) 
+            else: # BEARISH
+                atr_sl = last_close + atr_amount
+                atr_tp = last_close - (atr_amount * current_rr_ratio)
             
-            print(f"  Suggested ATR SL ({ATR_SL_MULT}x): {sl_price:.4f}")
-            print(f"  Suggested ATR TP ({ATR_TP_MULT}x): {tp_price:.4f}")
+            print(f"  Suggested ATR SL ({ATR_MULTIPLIER}x): {atr_sl:.4f}")
+            print(f"  Suggested ATR TP ({current_rr_ratio}x R/R): {atr_tp:.4f}")
             
             try:
                 dollar_per_point = TICKER_SPECS.get(t)
                 if dollar_per_point is None:
                     print(f"  Suggested Lots: N/A (No TICKER_SPECS for {t})")
                 else:
-                    # RISK CALCULATION
                     risk_dollars = ACCOUNT_CAPITAL * RISK_PER_TRADE_PCT
-                    # Risk per contract = Stop Distance * Value per Point
-                    risk_per_contract = atr_sl_dist * dollar_per_point
+                    risk_per_contract = atr_amount * dollar_per_point
                     
                     if risk_per_contract <= 0:
                          final_lots = 0.0
                     else:
-                        # Floor ensures we never exceed risk
                         raw_lots = risk_dollars / risk_per_contract
                         
-                        # Futures must be integers, FX can be float
-                        if "=F" in t:
-                            final_lots = math.floor(raw_lots)
-                        else:
-                            final_lots = round(raw_lots, 2)
+                        if "=F" in t: final_lots = math.floor(raw_lots)
+                        else: final_lots = round(raw_lots, 2)
                     
                     print(f"  Risk Amount: ${risk_dollars:.2f} (Max)")
                     unit = "Contracts" if "=F" in t else "Std. Lots"
