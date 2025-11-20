@@ -1,0 +1,4 @@
+trade_id,signal_hash,prediction_date,ticker,model_regime,model_version,direction,entry_price,stop_loss,take_profit,lots,risk_dollars,confidence,status,close_date,close_price,pnl
+20251120-NG=F,e8dfa5e4ae904d168a1d0b8dc2170964e019fa2e7cab96a4260d7ec925efe58f,2025-11-20,NG=F,ng_f_high_vix,v3.2,BEARISH,0.0,4.8360,4.0200,0,500.00,57.48,SKIPPED (Zero Size),,,
+20251120-EURUSD=X,671be00c2b9ea30600a8cb8ef83a920453384daba0154f72a76750a7379670a5,2025-11-20,EURUSD=X,eurusd_x,v3.2,BULLISH,0.0,1.1430,1.1664,0.57,500.00,50.10,OPEN,,,
+20251120-JPYUSD=X,8b7b9c2ebf7cdf0dea67fec4f0c8e4a8ee85d640f1d810c09f303c517ce0df1d,2025-11-20,JPYUSD=X,jpyusd_x_high_vix,v3.2,BULLISH,0.0,0.0063,0.0065,70.46,500.00,64.50,OPEN,,,
