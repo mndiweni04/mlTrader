@@ -59,7 +59,14 @@ jobs:
       run: |
         git config --global user.name "GitHub Action Bot"
         git config --global user.email "action-bot@github.com"
-        git pull 
-        git add logs/live_trades_log.csv
-        git diff-index --quiet HEAD || git commit -m "Bot: Update live trade log"
-        git push
+        
+        # Force add the log file, even if gitignore fights it
+        git add -f logs/live_trades_log.csv
+        
+        # Only try to commit if there are actually changes to THAT file
+        if git diff --staged --quiet; then
+          echo "No changes to trade log. Skipping commit."
+        else
+          git commit -m "Bot: Update live trade log [skip ci]"
+          git push
+        fi
