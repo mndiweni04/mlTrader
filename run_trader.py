@@ -17,13 +17,6 @@ LOGS_DIR = "logs"
 TRADES_LOG_FILE = os.path.join(LOGS_DIR, "live_trades_log.csv")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# Define Exposure Groups for safety
-CORRELATION_GROUPS = [
-    {'ES=F', 'NQ=F'},
-    {'EURUSD=X', 'JPYUSD=X'},
-    {'CL=F', 'NG=F'}
-]
-
 def run_predictions():
     print("Running predict.py...")
     python_exe = sys.executable
@@ -56,9 +49,8 @@ def run_predictions():
 def generate_signal_hash(date, ticker, regime, direction, version, confidence):
     """
     Creates a cryptographically unique ID for the signal.
-    Includes confidence to differentiate signals if model re-runs with slight changes.
     """
-    # Round confidence to 1 decimal to avoid floating point drift causing duplicates
+    # Round confidence to 1 decimal to avoid floating point drift
     try:
         conf_val = float(confidence)
         conf_str = f"{conf_val:.1f}"
@@ -68,46 +60,26 @@ def generate_signal_hash(date, ticker, regime, direction, version, confidence):
     raw_str = f"{date}|{ticker}|{regime}|{direction}|{version}|{conf_str}"
     return hashlib.sha256(raw_str.encode()).hexdigest()
 
-def get_open_trades_state():
+def get_existing_hashes():
     """
-    Reads the log to determine:
-    1. Which tickers currently have an 'OPEN' trade.
-    2. Which signal hashes have already been processed.
+    Reads the log to find which signal hashes have already been processed.
     """
-    open_tickers = set()
     existing_hashes = set()
-    
     if not os.path.exists(TRADES_LOG_FILE):
-        return open_tickers, existing_hashes
+        return existing_hashes
     
     try:
         with open(TRADES_LOG_FILE, 'r', newline='') as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
-                return open_tickers, existing_hashes
-                
+                return existing_hashes
             for row in reader:
-                # Track existing hashes for deduplication
                 if 'signal_hash' in row and row['signal_hash']:
                     existing_hashes.add(row['signal_hash'])
-                
-                # Track OPEN tickers to freeze them (prevent re-evaluation)
-                if row.get('status') == 'OPEN':
-                    open_tickers.add(row['ticker'])
-                    
     except Exception as e:
         print(f"Warning: Could not read log file: {e}")
         
-    return open_tickers, existing_hashes
-
-def check_exposure_cap(new_ticker, open_tickers):
-    for group in CORRELATION_GROUPS:
-        if new_ticker in group:
-            intersection = group.intersection(open_tickers)
-            if intersection and new_ticker not in intersection:
-                print(f"  [Risk] Blocking {new_ticker} due to correlated open trade: {intersection}")
-                return True 
-    return False
+    return existing_hashes
 
 def check_for_signals(output):
     if output is None: return []
@@ -149,7 +121,7 @@ def check_for_signals(output):
                 current_ticker = ticker_line.strip().replace("---", "").strip()
                 
                 model_regime = "unknown"
-                model_version = "v3.2" # Default
+                model_version = "v3.6" # Default
                 
                 if model_line:
                     if "(" in model_line: model_regime = model_line.split('(')[-1].replace(')', '').strip()
@@ -164,7 +136,7 @@ def check_for_signals(output):
                 if conf_val: confidence = conf_val.replace('%', '').split('(')[0].strip()
                 
                 entry_price = "0.0"
-                price_val = find_value_in_lines(i, "Current Price", ':')
+                price_val = find_value_in_lines(i, "Entry Price", ':')
                 if price_val: entry_price = price_val
                 
                 stop_loss = "0.0"
@@ -175,13 +147,8 @@ def check_for_signals(output):
                 tp_val = find_value_in_lines(i, "Suggested ATR TP", ':')
                 if tp_val: take_profit = tp_val
                 
-                risk_dollars = "0.00"
-                risk_val = find_value_in_lines(i, "Risk Amount", '$')
-                if risk_val: risk_dollars = risk_val.split('(')[0].strip()
-                
-                lots = "0.00"
-                lots_val = find_value_in_lines(i, "Suggested Lots", ':')
-                if lots_val: lots = lots_val.split(' ')[0].strip()
+                # We ignore whatever lots predict.py calculated, but parse it just in case
+                lots = "1.00" 
 
                 # Generate Strong Hash
                 sig_hash = generate_signal_hash(prediction_date, current_ticker, model_regime, direction, model_version, confidence)
@@ -197,7 +164,7 @@ def check_for_signals(output):
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "lots": lots,
-                    "risk_dollars": risk_dollars,
+                    "risk_dollars": "MANUAL", # Placeholder since we are doing manual sizing
                     "size_pct": f"{float(confidence):.2f}%", 
                     "signal_hash": sig_hash
                 }
@@ -208,7 +175,7 @@ def check_for_signals(output):
     return signals
 
 def log_signals_to_csv(signals_list):
-    open_tickers, existing_hashes = get_open_trades_state()
+    existing_hashes = get_existing_hashes()
 
     fieldnames = [
         'trade_id', 'signal_hash', 'prediction_date', 'ticker', 'model_regime', 'model_version',
@@ -221,39 +188,18 @@ def log_signals_to_csv(signals_list):
     valid_signals = []
 
     for sig in signals_list:
-        # RULE 1: Freeze OPEN trades
-        # If this ticker is already trading, DO NOT touch it. Do not log SKIPPED. Just ignore.
-        if sig['ticker'] in open_tickers:
-            print(f"  [Log] {sig['ticker']} is already OPEN. Freezing status (ignoring new signal).")
-            continue
-
-        # RULE 2: Idempotency (Check Hash)
+        # RULE 1: Idempotency
         if sig['signal_hash'] in existing_hashes:
             print(f"  [Log] Duplicate signal suppressed: {sig['ticker']}")
             continue
 
-        # RULE 3: Data Validation
-        try:
-            lots_val = float(sig['lots'])
-            entry_val = float(sig['entry_price'])
-            sl_val = float(sig['stop_loss'])
-            tp_val = float(sig['take_profit'])
-        except:
-            lots_val = 0.0
-            entry_val = 0.0
+        # --- CLEANER VERSION: Always OPEN, Force 1.00 Lots ---
+        # No checks for zero lots. No checks for exposure.
+        # Every unique signal is logged as an OPEN trade.
         
         status = 'OPEN'
+        sig['lots'] = "1.00" # Force standard size for logging
         
-        # Determine Status based on Validity
-        if entry_val <= 0 or sl_val <= 0 or tp_val <= 0:
-            status = 'SKIPPED (Invalid Data)'
-            print(f"  [Log] Skipped {sig['ticker']}: Invalid price data (0.0).")
-        elif lots_val <= 0:
-            status = 'SKIPPED (Zero Size)'
-            print(f"  [Log] Skipped {sig['ticker']}: 0.00 Lots calculated.")
-        elif check_exposure_cap(sig['ticker'], open_tickers):
-            status = 'SKIPPED (Exposure Cap)'
-            
         trade_id = f"{sig['prediction_date'].replace('-','')}-{sig['ticker']}"
 
         row = {
@@ -262,7 +208,7 @@ def log_signals_to_csv(signals_list):
             'prediction_date': sig['prediction_date'],
             'ticker': sig['ticker'],
             'model_regime': sig['model_regime'],
-            'model_version': sig.get('model_version', 'v3.2'),
+            'model_version': sig.get('model_version', 'v3.6'),
             'direction': sig['direction'],
             'entry_price': sig['entry_price'],
             'stop_loss': sig['stop_loss'],
@@ -280,7 +226,7 @@ def log_signals_to_csv(signals_list):
 
     if rows_to_add:
         try:
-            # Append-Only Mode ensures we never overwrite history
+            # Append-Only Mode
             file_exists = os.path.isfile(TRADES_LOG_FILE)
             with open(TRADES_LOG_FILE, 'a', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -320,21 +266,19 @@ if __name__ == "__main__":
             if actionable:
                 print(f" 🔔 NOTIFICATION: {len(actionable)} TRADES OPENED! 🔔")
                 email_subject = f"ML Trader: {len(actionable)} New Trades"
-                email_body = "New OPEN trades found:\n\n"
+                email_body = "New OPEN trades found (Manual Sizing Required):\n\n"
                 for sig in actionable:
                     email_body += (
                         f"------------------------\n"
                         f"ASSET:         {sig['ticker']} ({sig['model_regime']})\n"
                         f"DIRECTION:     {sig['direction']}\n"
-                        f"SIZE:          {sig['lots']} Lots\n"
-                        f"RISK:          ${sig['risk_dollars']}\n"
-                        f"CURRENT PRICE: {sig['entry_price']}\n"
+                        f"ENTRY:         {sig['entry_price']}\n"
                         f"STOP LOSS:     {sig['stop_loss']}\n"
                         f"TAKE PROFIT:   {sig['take_profit']}\n"
                         f"------------------------\n"
                     )
                 send_email(subject=email_subject, body=email_body)
             else:
-                print("\nAll signals skipped (Open, Zero Lots, or Invalid).")
+                print("\nAll signals suppressed (Duplicates).")
         else:
             print("\n 💤 No new trade signals found.")
