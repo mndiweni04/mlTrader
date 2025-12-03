@@ -60,26 +60,39 @@ def generate_signal_hash(date, ticker, regime, direction, version, confidence):
     raw_str = f"{date}|{ticker}|{regime}|{direction}|{version}|{conf_str}"
     return hashlib.sha256(raw_str.encode()).hexdigest()
 
-def get_existing_hashes():
+# --- RESTORED FUNCTION ---
+def get_open_trades_state():
     """
-    Reads the log to find which signal hashes have already been processed.
+    Reads the log to determine:
+    1. Which tickers currently have an 'OPEN' trade.
+    2. Which signal hashes have already been processed.
     """
+    open_tickers = set()
     existing_hashes = set()
+    
     if not os.path.exists(TRADES_LOG_FILE):
-        return existing_hashes
+        return open_tickers, existing_hashes
     
     try:
         with open(TRADES_LOG_FILE, 'r', newline='') as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
-                return existing_hashes
+                return open_tickers, existing_hashes
+            
             for row in reader:
+                # Track existing hashes for deduplication
                 if 'signal_hash' in row and row['signal_hash']:
                     existing_hashes.add(row['signal_hash'])
+                
+                # Track OPEN tickers to freeze them
+                if row.get('status') == 'OPEN':
+                    open_tickers.add(row['ticker'])
+                    
     except Exception as e:
         print(f"Warning: Could not read log file: {e}")
         
-    return existing_hashes
+    return open_tickers, existing_hashes
+# -------------------------
 
 def check_for_signals(output):
     if output is None: return []
@@ -87,7 +100,6 @@ def check_for_signals(output):
     lines = output.split('\n')
     
     prediction_date = datetime.now(pytz.timezone("Africa/Johannesburg")).strftime('%Y-%m-%d')
-    # Try to parse date from report header
     for line in lines:
         if "Generated (SAST):" in line:
             try:
@@ -97,7 +109,6 @@ def check_for_signals(output):
             except: pass
             break
     
-    # Helper to find value in nearby lines
     def find_value_in_lines(start_idx, keyword, split_char=':'):
         for k in range(start_idx, min(start_idx + 15, len(lines))):
             if keyword in lines[k]:
@@ -109,9 +120,7 @@ def check_for_signals(output):
     for i, line in enumerate(lines):
         if "[TRADE SIGNAL]" in line:
             try:
-                # 1. Get Ticker & Model
-                ticker_line = ""
-                model_line = ""
+                ticker_line = ""; model_line = ""
                 for j in range(i - 1, max(0, i - 15), -1):
                     if lines[j].startswith("---") and lines[j].endswith("---"):
                         ticker_line = lines[j]; break
@@ -121,16 +130,14 @@ def check_for_signals(output):
                 current_ticker = ticker_line.strip().replace("---", "").strip()
                 
                 model_regime = "unknown"
-                model_version = "v3.6" # Default
+                model_version = "v3.6" 
                 
                 if model_line:
                     if "(" in model_line: model_regime = model_line.split('(')[-1].replace(')', '').strip()
                     else: model_regime = model_line.split(':')[-1].strip()
 
-                # 2. Get Direction
                 direction = line.split('[')[0].split(':')[-1].strip()
                 
-                # 3. Robustly find other values
                 confidence = "0.0"
                 conf_val = find_value_in_lines(i, "Confidence", ':')
                 if conf_val: confidence = conf_val.replace('%', '').split('(')[0].strip()
@@ -147,10 +154,8 @@ def check_for_signals(output):
                 tp_val = find_value_in_lines(i, "Suggested ATR TP", ':')
                 if tp_val: take_profit = tp_val
                 
-                # We ignore whatever lots predict.py calculated, but parse it just in case
-                lots = "1.00" 
+                lots = "1.00" # Default for ledger
 
-                # Generate Strong Hash
                 sig_hash = generate_signal_hash(prediction_date, current_ticker, model_regime, direction, model_version, confidence)
 
                 signal_details = {
@@ -164,7 +169,7 @@ def check_for_signals(output):
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "lots": lots,
-                    "risk_dollars": "MANUAL", # Placeholder since we are doing manual sizing
+                    "risk_dollars": "MANUAL", 
                     "size_pct": f"{float(confidence):.2f}%", 
                     "signal_hash": sig_hash
                 }
@@ -175,7 +180,8 @@ def check_for_signals(output):
     return signals
 
 def log_signals_to_csv(signals_list):
-    existing_hashes = get_existing_hashes()
+    # --- RESTORED: Get open tickers ---
+    open_tickers, existing_hashes = get_open_trades_state()
 
     fieldnames = [
         'trade_id', 'signal_hash', 'prediction_date', 'ticker', 'model_regime', 'model_version',
@@ -188,17 +194,18 @@ def log_signals_to_csv(signals_list):
     valid_signals = []
 
     for sig in signals_list:
-        # RULE 1: Idempotency
+        # --- RESTORED RULE: Freeze OPEN trades ---
+        if sig['ticker'] in open_tickers:
+            print(f"  [Log] {sig['ticker']} is already OPEN. Skipping new signal.")
+            continue
+            
+        # Rule 2: Idempotency
         if sig['signal_hash'] in existing_hashes:
             print(f"  [Log] Duplicate signal suppressed: {sig['ticker']}")
             continue
 
-        # --- CLEANER VERSION: Always OPEN, Force 1.00 Lots ---
-        # No checks for zero lots. No checks for exposure.
-        # Every unique signal is logged as an OPEN trade.
-        
         status = 'OPEN'
-        sig['lots'] = "1.00" # Force standard size for logging
+        sig['lots'] = "1.00" 
         
         trade_id = f"{sig['prediction_date'].replace('-','')}-{sig['ticker']}"
 
@@ -226,7 +233,6 @@ def log_signals_to_csv(signals_list):
 
     if rows_to_add:
         try:
-            # Append-Only Mode
             file_exists = os.path.isfile(TRADES_LOG_FILE)
             with open(TRADES_LOG_FILE, 'a', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -279,6 +285,6 @@ if __name__ == "__main__":
                     )
                 send_email(subject=email_subject, body=email_body)
             else:
-                print("\nAll signals suppressed (Duplicates).")
+                print("\nAll signals suppressed (Duplicates or Already Open).")
         else:
             print("\n 💤 No new trade signals found.")
