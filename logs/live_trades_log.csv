@@ -1,0 +1,4 @@
+trade_id,signal_hash,prediction_date,ticker,model_regime,model_version,direction,entry_price,stop_loss,take_profit,lots,risk_dollars,confidence,status,close_date,close_price,pnl
+20251203-GC=F,33fa284f99e6103a383992ae456aca7ae5d3907e9352809d7c4c0a74a23361a1,2025-12-03,GC=F,gc_f,v3.6,BULLISH,4248.7002,4141.4716,4427.4145,1.00,MANUAL,54.12,OPEN,,,
+20251203-EURUSD=X,7bc314f5b9cdef5c25073210a43c3a653c79a7e2fff64ceefb6faff8607744c8,2025-12-03,EURUSD=X,eurusd_x,v3.6,BULLISH,1.1666,1.1578,1.1812,1.00,MANUAL,55.90,OPEN,,,
+20251203-NQ=F,df031b2c421e0413e7c3f25e609e62def954b14131c140a24f2eea20d7146bc9,2025-12-03,NQ=F,nq_f_low_vix,v3.6,BEARISH,25552.2500,26514.8482,23947.9196,1.00,MANUAL,65.12,OPEN,,,
