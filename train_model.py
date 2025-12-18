@@ -1,86 +1,14 @@
 import os
 import joblib
 import numpy as np
-import xgboost as xgb# =========================
-# XGBOOST TRAINING (WITH EARLY STOPPING)
-# =========================
-
-print(f"  Using scale_pos_weight: {scale_pos_weight:.2f}")
-
-xgb_model_raw = xgb.XGBClassifier(
-    n_estimators=500,
-    max_depth=4,
-    learning_rate=0.05,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    eval_metric="logloss",
-    random_state=42,
-    n_jobs=-1,
-    early_stopping_rounds=20,        # ✅ allowed ONLY here
-    scale_pos_weight=scale_pos_weight,
-    reg_alpha=0.5,
-    reg_lambda=1.0
-)
-
-print("  Training XGB with early stopping...")
-xgb_model_raw.fit(
-    X_train,
-    y_train,
-    eval_set=[(X_val, y_val)],
-    verbose=False
-)
-
-# =========================
-# CALIBRATION-SAFE CLONE (NO EARLY STOPPING)
-# =========================
-
-best_n_estimators = (
-    xgb_model_raw.best_iteration + 1
-    if hasattr(xgb_model_raw, "best_iteration")
-    else xgb_model_raw.n_estimators
-)
-
-xgb_model_for_calibration = xgb.XGBClassifier(
-    n_estimators=best_n_estimators,
-    max_depth=4,
-    learning_rate=0.05,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    eval_metric="logloss",
-    random_state=42,
-    n_jobs=-1,
-    scale_pos_weight=scale_pos_weight,
-    reg_alpha=0.5,
-    reg_lambda=1.0
-)
-
-# =========================
-# PROPER SKLEARN CALIBRATION
-# =========================
-
-print("  Calibrating XGB probabilities...")
-xgb_calibrated = CalibratedClassifierCV(
-    estimator=xgb_model_for_calibration,
-    method="sigmoid",
-    cv=3                      # 🔥 REQUIRED for XGB
-)
-
-xgb_calibrated.fit(X_train, y_train)
-
-joblib.dump(
-    xgb_calibrated,
-    os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib")
-)
-
-print(f"  ✅ Calibrated XGB saved for {regime_base}")
-
+import xgboost as xgb
 import warnings
-
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
 
 warnings.filterwarnings("ignore")
 
+# --- Configuration ---
 DATA_DIR = "data/processed"
 MODELS_DIR = "models"
 os.makedirs(MODELS_DIR, exist_ok=True)
@@ -88,8 +16,8 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
 REGIME_SUFFIXES = ["", "_low_vix", "_high_vix"]
 
-
 def load_data(ticker_base):
+    """Loads preprocessed numpy files for training and validation."""
     try:
         X_train = np.load(os.path.join(DATA_DIR, f"{ticker_base}_X_train.npy"))
         y_train = np.load(os.path.join(DATA_DIR, f"{ticker_base}_y_train.npy"))
@@ -99,7 +27,7 @@ def load_data(ticker_base):
     except FileNotFoundError:
         return None
 
-
+# --- Main Training Loop ---
 for ticker in TICKERS:
     base = ticker.replace("=", "_").lower()
     found_model = False
@@ -120,15 +48,15 @@ for ticker in TICKERS:
             print("  Skipping: insufficient class diversity.")
             continue
 
-        # ✅ DEFINE FIRST
+        # 1. Calculate scale_pos_weight for imbalance
         count_neg = np.sum(y_train == 0)
         count_pos = np.sum(y_train == 1)
         scale_pos_weight = count_neg / (count_pos + 1e-8)
-
         print(f"  Using scale_pos_weight: {scale_pos_weight:.2f}")
 
-        # --- XGBoost ---
-        xgb_model_raw = xgb.XGBClassifier(
+        # --- 2. XGBoost Training ---
+        # We train with early stopping first to find the best iteration
+        xgb_raw = xgb.XGBClassifier(
             n_estimators=500,
             max_depth=4,
             learning_rate=0.05,
@@ -143,49 +71,39 @@ for ticker in TICKERS:
             reg_lambda=1.0
         )
 
-        print("  Training XGB...")
-        xgb_model_raw.fit(
-            X_train,
-            y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
+        print("  Training XGB with early stopping...")
+        xgb_raw.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
-        print("  Calibrating XGB...")
+        print("  Calibrating XGB probabilities (using 'prefit')...")
+        # Use 'prefit' because we want to calibrate using the X_val set specifically
         xgb_calibrated = CalibratedClassifierCV(
-            estimator=xgb_model_raw,
+            estimator=xgb_raw,
             method="sigmoid",
-            cv=None
+            cv="prefit"
         )
         xgb_calibrated.fit(X_val, y_val)
 
-        joblib.dump(
-            xgb_calibrated,
-            os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib")
-        )
+        joblib.dump(xgb_calibrated, os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib"))
 
-        # --- Logistic Regression ---
-        lr_model_raw = LogisticRegression(
+        # --- 3. Logistic Regression Training ---
+        print("  Training Logistic Regression...")
+        lr_raw = LogisticRegression(
             solver="liblinear",
             class_weight="balanced",
             random_state=42,
             C=0.1
         )
+        lr_raw.fit(X_train, y_train)
 
-        lr_model_raw.fit(X_train, y_train)
-
-        print("  Calibrating LR...")
+        print("  Calibrating LR probabilities...")
         lr_calibrated = CalibratedClassifierCV(
-            estimator=lr_model_raw,
+            estimator=lr_raw,
             method="sigmoid",
-            cv=None
+            cv="prefit"
         )
         lr_calibrated.fit(X_val, y_val)
 
-        joblib.dump(
-            lr_calibrated,
-            os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib")
-        )
+        joblib.dump(lr_calibrated, os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
 
         print(f"  ✅ Saved models for {regime_base}")
 
