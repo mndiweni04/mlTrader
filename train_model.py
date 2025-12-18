@@ -80,7 +80,7 @@ for ticker in TICKERS:
         
         print("  Calibrating XGB probabilities on validation set...")
         xgb_calibrated = CalibratedClassifierCV(
-            xgb_model_raw, 
+            estimator = xgb_model_raw, 
             method='sigmoid', 
             cv='prefit'
         )
@@ -104,7 +104,7 @@ for ticker in TICKERS:
         print("  Calibrating LR probabilities on validation set...")
         # We must pre-fit the calibrator for LR on the validation set
         lr_calibrated = CalibratedClassifierCV(
-            lr_model_raw, 
+            estimator=lr_model_raw, 
             method='sigmoid', 
             cv='prefit' # Use 'prefit' as we've already trained it
         )
