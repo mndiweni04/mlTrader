@@ -79,8 +79,9 @@ for ticker in TICKERS:
         xgb_model_raw.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         
         print("  Calibrating XGB probabilities on validation set...")
+        # FIX: Explicitly use 'estimator=' to prevent scikit-learn validation error
         xgb_calibrated = CalibratedClassifierCV(
-            estimator = xgb_model_raw, 
+            estimator=xgb_model_raw, 
             method='sigmoid', 
             cv='prefit'
         )
@@ -102,7 +103,7 @@ for ticker in TICKERS:
         lr_model_raw.fit(X_train, y_train) 
         
         print("  Calibrating LR probabilities on validation set...")
-        # We must pre-fit the calibrator for LR on the validation set
+        # FIX: Explicitly use 'estimator=' to prevent scikit-learn validation error
         lr_calibrated = CalibratedClassifierCV(
             estimator=lr_model_raw, 
             method='sigmoid', 
@@ -113,7 +114,6 @@ for ticker in TICKERS:
 
         joblib.dump(lr_calibrated, os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
         print(f"  ✅ Calibrated LR model saved for {regime_base}.")
-        # --- END NEW ---
 
     if not found_model_for_ticker:
         print(f"\n--- No processed data files found for ticker {ticker} ---")
