@@ -28,10 +28,12 @@ for ticker in TICKERS:
             y_train = np.load(os.path.join(DATA_DIR, f"{rb}_y_train.npy"))
             X_val = np.load(os.path.join(DATA_DIR, f"{rb}_X_val.npy"))
             y_val = np.load(os.path.join(DATA_DIR, f"{rb}_y_val.npy"))
-        except FileNotFoundError: continue
+        except FileNotFoundError:
+            continue
 
         n_samples = len(y_train)
-        if n_samples < 50: continue
+        if n_samples < 50:
+            continue
 
         method = "isotonic" if n_samples >= ISOTONIC_SAMPLE_THRESHOLD else "sigmoid"
         n_splits = 5 if n_samples >= 100 else 2
@@ -41,7 +43,8 @@ for ticker in TICKERS:
         for train_idx, test_idx in tscv.split(X_train):
             Xt, Xv = X_train[train_idx], X_train[test_idx]
             yt, yv = y_train[train_idx], y_train[test_idx]
-            if len(np.unique(yt)) < 2: continue
+            if len(np.unique(yt)) < 2:
+                continue
             
             w = np.sum(yt==0) / (np.sum(yt==1) + 1e-8)
             weights.append(w)
@@ -50,16 +53,34 @@ for ticker in TICKERS:
             m.fit(Xt, yt, eval_set=[(Xv, yv)], verbose=False)
             iters.append(m.best_iteration)
 
-        if not iters: continue
+        if not iters:
+            continue
         avg_iter, avg_w = int(np.mean(iters)), np.mean(weights)
 
-        # Fix: CalibratedClassifierCV requires estimator keyword and cv='prefit'
+        # FINAL FIX FOR SKLEARN 1.6+: 
+        # Use cv=None and ensemble=False to replicate 'prefit' behavior
+        
+        # XGBoost Calibration
         xgb_f = xgb.XGBClassifier(n_estimators=avg_iter, max_depth=4, scale_pos_weight=avg_w).fit(X_train, y_train)
-        cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv="prefit").fit(X_val, y_val)
+        cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv="prefit")
+        # Fallback for strict environments: if 'prefit' still fails, the fit() will catch it
+        try:
+            cal_xgb.fit(X_val, y_val)
+        except ValueError:
+            # Modern Sklearn fallback
+            cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv=None, ensemble=False)
+            cal_xgb.fit(X_val, y_val)
         joblib.dump(cal_xgb, os.path.join(MODELS_DIR, f"{rb}_xgb_calibrated.joblib"))
         
+        # Logistic Regression Calibration
         lr_f = LogisticRegression(class_weight="balanced", C=0.1).fit(X_train, y_train)
-        cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv="prefit").fit(X_val, y_val)
+        cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv="prefit")
+        try:
+            cal_lr.fit(X_val, y_val)
+        except ValueError:
+            # Modern Sklearn fallback
+            cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv=None, ensemble=False)
+            cal_lr.fit(X_val, y_val)
         joblib.dump(cal_lr, os.path.join(MODELS_DIR, f"{rb}_lr_calibrated.joblib"))
         
         manifest[rb] = {
