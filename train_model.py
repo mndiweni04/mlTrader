@@ -33,7 +33,7 @@ for ticker in TICKERS:
         n_samples = len(y_train)
         if n_samples < 50: continue
 
-        calibration_method = "isotonic" if n_samples >= ISOTONIC_SAMPLE_THRESHOLD else "sigmoid"
+        method = "isotonic" if n_samples >= ISOTONIC_SAMPLE_THRESHOLD else "sigmoid"
         n_splits = 5 if n_samples >= 100 else 2
         tscv = TimeSeriesSplit(n_splits=n_splits)
         
@@ -53,25 +53,23 @@ for ticker in TICKERS:
         if not iters: continue
         avg_iter, avg_w = int(np.mean(iters)), np.mean(weights)
 
-        # Final Training
+        # Fix: CalibratedClassifierCV requires estimator keyword and cv='prefit'
         xgb_f = xgb.XGBClassifier(n_estimators=avg_iter, max_depth=4, scale_pos_weight=avg_w).fit(X_train, y_train)
-        # FIX: Explicitly name 'estimator' and ensure 'cv' is correctly set
-        cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=calibration_method, cv="prefit").fit(X_val, y_val)
+        cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv="prefit").fit(X_val, y_val)
         joblib.dump(cal_xgb, os.path.join(MODELS_DIR, f"{rb}_xgb_calibrated.joblib"))
         
         lr_f = LogisticRegression(class_weight="balanced", C=0.1).fit(X_train, y_train)
-        # FIX: Explicitly name 'estimator' and ensure 'cv' is correctly set
-        cal_lr = CalibratedClassifierCV(estimator=lr_f, method=calibration_method, cv="prefit").fit(X_val, y_val)
+        cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv="prefit").fit(X_val, y_val)
         joblib.dump(cal_lr, os.path.join(MODELS_DIR, f"{rb}_lr_calibrated.joblib"))
         
         manifest[rb] = {
             "last_trained": datetime.now().isoformat(),
             "training_samples": int(n_samples),
-            "calibration_method": calibration_method,
+            "calibration_method": method,
             "xgb_model": f"{rb}_xgb_calibrated.joblib",
             "lr_model": f"{rb}_lr_calibrated.joblib"
         }
 
 with open(os.path.join(MODELS_DIR, "model_manifest.json"), 'w') as f:
     json.dump(manifest, f, indent=2)
-print("✅ train_model.py: Batch training complete.")
+print("✅ train_model.py Complete")
