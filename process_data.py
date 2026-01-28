@@ -36,7 +36,8 @@ print("Loading all macro data...")
 macro_data = {}
 for mt in MACRO_TICKERS:
     df = load_raw(mt)
-    if df is not None: macro_data[mt] = df
+    if df is not None:
+        macro_data[mt] = df
 
 try:
     sp_df = load_raw("ES=F")
@@ -56,7 +57,6 @@ for t in TICKERS:
     df = df.copy().sort_index()
     df['Close'].to_csv(os.path.join(PROC_DIR, f"{base}_test_prices.csv"))
 
-    # Convert to float64 for TA-Lib
     for col in ['High', 'Low', 'Close', 'Volume']:
         df[col] = df[col].astype(np.float64)
 
@@ -64,7 +64,6 @@ for t in TICKERS:
     high, low, close, volume = df['High'].values, df['Low'].values, df['Close'].values, df['Volume'].values
     ticker_ret = talib.ROC(close, timeperiod=1)
     
-    # Features
     features_df['MA5'] = talib.MA(close, 5)
     features_df['MA20'] = talib.MA(close, 20)
     features_df['MA50'] = talib.MA(close, 50)
@@ -83,16 +82,14 @@ for t in TICKERS:
     features_df['Day_Range_Pct'] = (df['High'] - df['Low']) / (df['Close'] + 1e-12)
     features_df['Dist_from_MA20'] = (df['Close'] - features_df['MA20']) / (features_df['MA20'] + 1e-12)
 
-    # FIX: Warm-up period handling to prevent data loss from dropna()
+    # Handle indicator warm-up period to avoid dropping too much data
     features_df = features_df.ffill().bfill()
 
-    # Macro Features Alignment
     if "^VIX" in macro_data:
         vix_c = macro_data["^VIX"]['Close'].reindex(df.index, method='ffill').astype(np.float64)
         features_df['VIX_Close'] = vix_c
         features_df['VIX_Regime'] = (vix_c > 20).astype(int)
 
-    # Labeling
     df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
     atr_values = talib.ATR(high, low, close, 14)
     barrier_threshold = atr_values * 0.20
@@ -100,10 +97,12 @@ for t in TICKERS:
     df.loc[df['future_return'] > barrier_threshold, 'label'] = 1
     df.loc[df['future_return'] < -barrier_threshold, 'label'] = 0
     
-    # FIX: Fallback for sparse data
     df_full = features_df.join(df[['label']])
-    if df_full.dropna().shape[0] < 100:
-        print(f"  [INFO] Sparse data fallback for {t}")
+    valid_count = df_full.dropna().shape[0]
+    
+    # Fallback labeling if ATR barrier is too sparse
+    if valid_count < 100:
+        print(f"  [INFO] Sparse data fallback for {t} ({valid_count} rows)")
         df['label'] = (df['future_return'] > 0).astype(int)
         df_full = features_df.join(df[['label']])
 
@@ -114,5 +113,61 @@ for t in TICKERS:
     if df_full.empty: continue
     df_full['label'] = df_full['label'].astype(int)
 
-    # Split and process regimes (Unchanged logic)
-    # ... [Rest of the splitting/scaling logic from original file] ...
+    # Processing split for regime-specific assets
+    dfs_to_process = []
+    if t in TICKERS_TO_SPLIT:
+        df_low = df_full[df_full['VIX_Regime'] == 0]
+        df_high = df_full[df_full['VIX_Regime'] == 1]
+        dfs_to_process = [(df_low, "_low_vix"), (df_high, "_high_vix")]
+    else:
+        dfs_to_process = [(df_full, "")] 
+
+    for df_split, suffix in dfs_to_process:
+        if df_split.empty: continue
+            
+        regime_base = f"{base}{suffix}"
+        n = len(df_split)
+        n_test = max(int(n * TEST_SIZE), 1)
+        n_val = max(int((n - n_test) * VAL_SIZE), 1) 
+        n_train = n - n_test - n_val 
+
+        if n_train <= 0: continue
+
+        df_train = df_split.iloc[:n_train]
+        df_val = df_split.iloc[n_train:n_train + n_val]
+        df_test = df_split.iloc[n_train + n_val:]
+        
+        y_train_full = df_train['label'].values
+        mask_valid_train = ~np.isnan(y_train_full)
+        df_train_labeled = df_train[mask_valid_train].copy()
+        
+        class_0_mask = df_train_labeled['label'].astype(int) == 0
+        class_1_mask = df_train_labeled['label'].astype(int) == 1
+        n_class_0, n_class_1 = np.sum(class_0_mask), np.sum(class_1_mask)
+        
+        if n_class_0 > 0 and n_class_1 > 0:
+            min_size = min(n_class_0, n_class_1)
+            df_c0 = resample(df_train_labeled[class_0_mask], n_samples=min_size, random_state=42, replace=False)
+            df_c1 = resample(df_train_labeled[class_1_mask], n_samples=min_size, random_state=42, replace=False)
+            df_train_bal = pd.concat([df_c0, df_c1], axis=0).sort_index()
+            
+            X_train = df_train_bal[feature_cols].values
+            y_train = df_train_bal['label'].astype(int).values
+            X_val = df_val[feature_cols].values
+            y_val = df_val['label'].astype(int).values
+            X_test = df_test[feature_cols].values
+            y_test = df_test['label'].astype(int).values
+
+            scaler = StandardScaler().fit(X_train)
+            np.save(os.path.join(PROC_DIR, f"{regime_base}_X_train.npy"), scaler.transform(X_train))
+            np.save(os.path.join(PROC_DIR, f"{regime_base}_y_train.npy"), y_train)
+            np.save(os.path.join(PROC_DIR, f"{regime_base}_X_val.npy"), scaler.transform(X_val))
+            np.save(os.path.join(PROC_DIR, f"{regime_base}_y_val.npy"), y_val)
+            np.save(os.path.join(PROC_DIR, f"{regime_base}_X_test.npy"), scaler.transform(X_test))
+            np.save(os.path.join(PROC_DIR, f"{regime_base}_y_test.npy"), y_test)
+            
+            joblib.dump(scaler, os.path.join(MODELS_DIR, f"{regime_base}_scaler.joblib"))
+            joblib.dump(feature_cols, os.path.join(MODELS_DIR, f"{regime_base}_feature_list.joblib"))
+            joblib.dump(df_test.index, os.path.join(MODELS_DIR, f"{regime_base}_test_indices.joblib"))
+
+print("\n[OK] process_data.py Finished")
