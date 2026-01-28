@@ -1,309 +1,260 @@
 # predict.py
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import sys
+import time
 import warnings
-warnings.filterwarnings('ignore')
-
 import joblib
 import numpy as np
 import pandas as pd
+import yfinance as yf
 from datetime import datetime
 import pytz
-import yfinance as yf
-import time
-import math
-import talib
+import json
 
+# --- FAIL-FAST PROTOCOL ---
 try:
-    import tensorflow as tf
-    tf.get_logger().setLevel('ERROR')
-except (ImportError, AttributeError):
-    pass
+    import talib
+except ImportError:
+    sys.exit("CRITICAL ERROR: TA-Lib is missing. Terminating predict.py to prevent feature drift.")
 
-# --- 1. CONFIGURATION ---
-MODEL_VERSION = "v3.6" 
-# -----------------------------
+warnings.filterwarnings('ignore')
 
+# --- CONFIGURATION ---
+MODEL_VERSION = "v4.0"
 TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
 MACRO_TICKERS = ["DX=F", "TLT", "^VIX", "XLE", "ZS=F", "ZW=F", "XLF", "XLK"]
-TICKERS_TO_SPLIT = ["ES=F", "NQ=F", "NG=F", "JPYUSD=X"] 
-
-INTERVAL = "1d"
-DATA_PERIOD = "250d" 
+TICKERS_TO_SPLIT = ["ES=F", "NQ=F", "NG=F", "JPYUSD=X"]
 MODELS_DIR = "models"
-
-# --- EXITS ---
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 2.5
-
-DEFAULT_CONF_THRESH_BULLISH = 0.60
-DEFAULT_CONF_THRESH_BEARISH = 0.40
-
-# --- TA-Lib Free Functions ---
-def compute_atr(df, n=14):
-    high = df['High']; low = df['Low']; close = df['Close']
-    tr1 = high - low; tr2 = (high - close.shift(1)).abs(); tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(n, min_periods=1).mean()
-
-def compute_rsi(series, period=14):
-    delta = series.diff(); up = delta.clip(lower=0); down = -1 * delta.clip(upper=0)
-    ma_up = up.rolling(window=period, min_periods=1).mean(); ma_down = down.rolling(window=period, min_periods=1).mean()
-    rs = ma_up / (ma_down + 1e-12); return 100 - (100 / (1 + rs))
-
-def compute_bb_width(close, n=20, ndev=2):
-    middle = close.rolling(n, min_periods=1).mean() 
-    std = close.rolling(n, min_periods=1).std()
-    upper = middle + (std * ndev); lower = middle - (std * ndev)
-    return (upper - lower) / (middle + 1e-12)
-
-def compute_macd(close, fast=12, slow=26, signal=9):
-    exp1 = close.ewm(span=fast, adjust=False).mean(); exp2 = close.ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2; macdsignal = macd.ewm(span=signal, adjust=False).mean(); macdhist = macd - macdsignal
-    return macd, macdsignal, macdhist
-
-def compute_roc(close, n=10):
-    return (close - close.shift(n)) / (close.shift(n) + 1e-12)
-
-def compute_obv(close, volume):
-    obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
-    return obv
+DATA_PERIOD = "250d"
+INTERVAL = "1d"
 
 def fetch_live(ticker):
+    """Robust data fetching with retries."""
     for attempt in range(3):
         try:
             df = yf.download(ticker, period=DATA_PERIOD, interval=INTERVAL, progress=False, auto_adjust=False, timeout=10)
-            if df is None or df.empty: raise Exception("No data returned")
+            if df is None or df.empty: raise Exception("Empty dataframe")
+            
+            # Formatting
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df.columns = [c.title() for c in df.columns]
             
-            if "Adj Close" in df.columns and "Close" not in df.columns: df["Close"] = df["Adj Close"]
+            # FX/Index cleanup
+            if 'Volume' not in df.columns: df['Volume'] = 0
             if 'Open' not in df.columns: df['Open'] = df['Close']
             if 'High' not in df.columns: df['High'] = df['Close']
             if 'Low' not in df.columns: df['Low'] = df['Close']
-            if 'Volume' not in df.columns: df['Volume'] = 0
-                
+            
+            # Timezone
             df.index = pd.to_datetime(df.index)
             if df.index.tz is None: df.index = df.index.tz_localize('UTC')
             else: df.index = df.index.tz_convert('UTC')
-            return df 
+            
+            return df
         except Exception as e:
-            print(f"  Fetch failed for {ticker} (Attempt {attempt+1}/3): {e}")
-            time.sleep(2)
+            time.sleep(1)
     return None
 
 def engineer_live(df, ticker_name, sp_close=None, macro_data={}):
+    """
+    Strictly matches process_data.py math using TA-Lib.
+    """
     df = df.copy().sort_index()
-    close = df['Close']
-    ticker_ret = close.pct_change() 
-    features_df = pd.DataFrame(index=df.index)
     
-    features_df['MA5'] = close.rolling(5).mean()
-    features_df['MA20'] = close.rolling(20).mean()
-    features_df['MA50'] = close.rolling(50).mean()
-    features_df['MA200'] = close.rolling(200).mean()
-    features_df['MA_diff'] = features_df['MA50'] - features_df['MA200']
+    # --- EXPLICIT DATA TYPING (Float64 for TA-Lib) ---
+    c = df['Close'].astype(np.float64).values
+    h = df['High'].astype(np.float64).values
+    l = df['Low'].astype(np.float64).values
+    v = df['Volume'].astype(np.float64).values
     
-    features_df['ATR'] = compute_atr(df, n=14)
-    features_df['BB_Width'] = compute_bb_width(close, n=20)
-    features_df['RSI14'] = compute_rsi(close, period=14)
-    features_df['ROC10'] = compute_roc(close, n=10) 
-    features_df['MACD'], features_df['MACD_signal'], features_df['MACD_hist'] = compute_macd(close)
+    # Helper for returns (used in correlations)
+    ticker_ret = df['Close'].pct_change().fillna(0).astype(np.float64).values
     
-    if 'Volume' in df.columns and df['Volume'].sum() > 0:
-        features_df['OBV'] = compute_obv(close, df['Volume'])
+    feat = pd.DataFrame(index=df.index)
     
+    # --- TA-LIB INDICATORS ---
+    feat['MA5'] = talib.MA(c, 5)
+    feat['MA20'] = talib.MA(c, 20)
+    feat['MA50'] = talib.MA(c, 50)
+    feat['MA200'] = talib.MA(c, 200)
+    feat['MA_diff'] = feat['MA50'] - feat['MA200']
+    
+    feat['ATR'] = talib.ATR(h, l, c, 14)
+    u, m, lo = talib.BBANDS(c, 20, 2, 2, 0)
+    feat['BB_Width'] = (u - lo) / (m + 1e-12)
+    
+    feat['RSI14'] = talib.RSI(c, 14)
+    feat['ROC10'] = talib.ROC(c, 10)
+    feat['MACD'], feat['MACD_signal'], feat['MACD_hist'] = talib.MACD(c)
+    
+    if np.sum(v) > 0:
+        feat['OBV'] = talib.OBV(c, v)
+    
+    # --- NEW: Intraday Volatility Features for Quiet Markets (ES=F, NQ=F) ---
+    # Day Range Pct: (High - Low) / Close (captures intraday volatility)
+    feat['Day_Range_Pct'] = (df['High'] - df['Low']) / (df['Close'] + 1e-12)
+    
+    # Distance from MA20: (Close - MA20) / MA20 (captures price position relative to trend)
+    feat['Dist_from_MA20'] = (df['Close'] - feat['MA20']) / (feat['MA20'] + 1e-12)
+        
+    # --- MACRO LOGIC (Matches process_data.py) ---
     if "^VIX" in macro_data:
-        vix_close = macro_data["^VIX"]['Close'].reindex(df.index, method='ffill')
-        features_df['VIX_Close'] = vix_close
-        features_df['VIX_Regime'] = (vix_close > 20).astype(int) 
+        v_c = macro_data["^VIX"]['Close'].reindex(df.index, method='ffill').astype(np.float64)
+        feat['VIX_Close'] = v_c
+        feat['VIX_Regime'] = (v_c > 20).astype(int)
+
+    # Helper: Macro Correlation Calc
+    def calc_corr(series_ret, name):
+        # Align macro returns to ticker index
+        aligned_macro = series_ret.reindex(df.index, method='ffill').fillna(0).astype(np.float64).values
+        # Use TA-Lib CORREL
+        return talib.CORREL(ticker_ret, aligned_macro, 10)
 
     if "DX=F" in macro_data:
-        dxy_ret = macro_data["DX=F"]['PctChange'].reindex(df.index, method='ffill')
-        features_df['DXY_ret_1d'] = dxy_ret
-        features_df['Corr_DXY_10d'] = ticker_ret.rolling(10).corr(dxy_ret)
+        dxy = macro_data["DX=F"]['Close'].pct_change()
+        feat['DXY_ret_1d'] = dxy.reindex(df.index, method='ffill')
+        feat['Corr_DXY_10d'] = calc_corr(dxy, 'DXY')
 
     if "TLT" in macro_data:
-        tlt_ret = macro_data["TLT"]['PctChange'].reindex(df.index, method='ffill')
-        features_df['TLT_ret_1d'] = tlt_ret
-        features_df['Corr_TLT_10d'] = ticker_ret.rolling(10).corr(tlt_ret)
+        tlt = macro_data["TLT"]['Close'].pct_change()
+        feat['TLT_ret_1d'] = tlt.reindex(df.index, method='ffill')
+        feat['Corr_TLT_10d'] = calc_corr(tlt, 'TLT')
 
     if ticker_name == "CL=F" and "XLE" in macro_data:
-        xle_ret = macro_data["XLE"]['PctChange'].reindex(df.index, method='ffill')
-        features_df['XLE_ret_1d'] = xle_ret
-        features_df['Corr_XLE_10d'] = ticker_ret.rolling(10).corr(xle_ret)
-
+        xle = macro_data["XLE"]['Close'].pct_change()
+        feat['XLE_ret_1d'] = xle.reindex(df.index, method='ffill')
+        feat['Corr_XLE_10d'] = calc_corr(xle, 'XLE')
+        
     if ticker_name == "ZC=F":
-        features_df['Month'] = df.index.month
+        feat['Month'] = df.index.month
         if "ZS=F" in macro_data:
-            zs_ret = macro_data["ZS=F"]['PctChange'].reindex(df.index, method='ffill')
-            features_df['Corr_ZS_10d'] = ticker_ret.rolling(10).corr(zs_ret)
+            feat['Corr_ZS_10d'] = calc_corr(macro_data["ZS=F"]['Close'].pct_change(), 'ZS')
         if "ZW=F" in macro_data:
-            zw_ret = macro_data["ZW=F"]['PctChange'].reindex(df.index, method='ffill')
-            features_df['Corr_ZW_10d'] = ticker_ret.rolling(10).corr(zw_ret)
-
-    if ticker_name == "ES=F":
-        if "XLF" in macro_data:
-            xlf_ret = macro_data["XLF"]['PctChange'].reindex(df.index, method='ffill')
-            features_df['XLF_ret_1d'] = xlf_ret
+            feat['Corr_ZW_10d'] = calc_corr(macro_data["ZW=F"]['Close'].pct_change(), 'ZW')
+            
+    if ticker_name in ["ES=F", "NQ=F"]:
         if "XLK" in macro_data:
-            xlk_ret = macro_data["XLK"]['PctChange'].reindex(df.index, method='ffill')
-            features_df['XLK_ret_1d'] = xlk_ret
-
-    if ticker_name == "NQ=F":
-        if "XLK" in macro_data:
-            xlk_ret = macro_data["XLK"]['PctChange'].reindex(df.index, method='ffill')
-            features_df['XLK_ret_1d'] = xlk_ret
+            feat['XLK_ret_1d'] = macro_data["XLK"]['Close'].pct_change().reindex(df.index, method='ffill')
     
     if sp_close is not None and ticker_name != "ES=F":
-        sp_close_reindexed = sp_close.reindex(df.index, method='ffill')
-        features_df['Corr_SP500'] = ticker_ret.rolling(50).corr(sp_close_reindexed)
+         # Align SP500 returns
+        aligned_sp = sp_close.reindex(df.index, method='ffill').fillna(0).astype(np.float64).values
+        feat['Corr_SP500'] = talib.CORREL(ticker_ret, aligned_sp, 50)
     
-    features_df = features_df.shift(1)
+    # --- CRITICAL: T-1 ALIGNMENT ---
+    # Shift features by 1 to match "Yesterday's data predicts Today"
+    lagged_feat = feat.shift(1)
     
-    features_df['Close'] = df['Close']
-    features_df['ATR_current'] = compute_atr(df, n=14) 
+    # --- EXIT LOGIC ---
+    # We need CURRENT ATR for Stops/Targets, so we calculate it on the *unshifted* data
+    # (ATR for Day T is known at Close of Day T)
+    lagged_feat['ATR_current'] = feat['ATR'] 
     
-    return features_df
+    return lagged_feat
 
 if __name__ == "__main__":
+    signals_list = []
+    
     now = datetime.now(pytz.timezone("Africa/Johannesburg"))
-    print("\n" + "="*70)
-    print(" LIVE 5-DAY DIRECTIONAL REPORT (LEAKAGE-FREE) V3.6 - SIGNAL ONLY") 
-    print("="*70)
-    print(f"Generated (SAST): {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
-    print(f"Model Version: {MODEL_VERSION}")
-
+    timestamp = now.isoformat()
+    
+    print(f"[PREDICT] Starting signal generation at {timestamp}")
+    
     print("Fetching live macro data...")
-    live_macro_data = {}
-    for mt in MACRO_TICKERS:
-        df_m = fetch_live(mt)
-        if df_m is not None:
-            df_m['PctChange'] = df_m['Close'].pct_change()
-            live_macro_data[mt] = df_m
-    print("Macro data fetch complete.\n")
-            
+    macros = {mt: fetch_live(mt) for mt in MACRO_TICKERS}
+    
+    vix_value = None
+    vix_regime = 0
+    if macros.get("^VIX") is not None:
+        vix_value = float(macros["^VIX"]['Close'].iloc[-1])
+        vix_regime = 1 if vix_value > 20 else 0
+        print(f"[VIX] Value: {vix_value:.2f}, Regime: {vix_regime} (0=low, 1=high)")
+
     sp_df = fetch_live("ES=F")
     sp_close = sp_df['Close'].pct_change() if sp_df is not None else None
-    
-    current_vix_regime = 0 
-    if "^VIX" in live_macro_data:
-        try:
-            vix_val = live_macro_data["^VIX"]['Close'].iloc[-1]
-            if vix_val > 20: current_vix_regime = 1
-            print(f"  Current VIX: {vix_val:.2f}. Using {'HIGH' if current_vix_regime else 'LOW'}-VIX models.")
-        except Exception: pass
 
     for t in TICKERS:
-        print(f"--- {t} ---")
         base = t.replace('=','_').lower()
-        suffix = ""
-        if t in TICKERS_TO_SPLIT:
-            suffix = "_high_vix" if current_vix_regime == 1 else "_low_vix"
-            print(f"  (VIX REGIME: {'HIGH' if current_vix_regime else 'LOW'})")
+        suffix = ("_high_vix" if vix_regime else "_low_vix") if t in TICKERS_TO_SPLIT else ""
+        rb = f"{base}{suffix}"
+        model_regime = rb
         
-        regime_base = f"{base}{suffix}"
-        
-        choice_file = os.path.join(MODELS_DIR, f"{regime_base}_model_choice.joblib")
-        try:
-            model_choice = joblib.load(choice_file)
-            chosen_model_type = model_choice['model_type']
-            conf_thresh_bullish = model_choice['thresholds']['bull']
-            conf_thresh_bearish = model_choice['thresholds']['bear']
-            print(f"  Loaded dynamic choice: Model={chosen_model_type}, Thresh={conf_thresh_bullish*100:.0f}% / {conf_thresh_bearish*100:.0f}%")
-        except Exception:
-            print(f"  Warning: Could not load model choice for '{regime_base}'. Holding.")
+        choice_path = os.path.join(MODELS_DIR, f"{rb}_model_choice.joblib")
+        if not os.path.exists(choice_path): 
             continue
-            
-        if chosen_model_type == 'none':
-            print(f"  No profitable model found for {regime_base}. Holding.")
-            print("-" * 30); continue
-            
-        scaler_file = os.path.join(MODELS_DIR, f"{regime_base}_scaler.joblib")
-        feature_file = os.path.join(MODELS_DIR, f"{regime_base}_feature_list.joblib")
-        
-        if not all(os.path.exists(f) for f in [scaler_file, feature_file]):
-            print(f"  Missing scaler/features for '{regime_base}'."); continue
-            
-        scaler = joblib.load(scaler_file)
-        features = joblib.load(feature_file)
+        choice = joblib.load(choice_path)
+        if choice['model_type'] == 'none': 
+            continue
         
         df = fetch_live(t)
-        if df is None or df.empty:
-            print(f"  No live data for {t}."); print("-" * 30); continue
-
-        df_feat = engineer_live(df, t, sp_close, live_macro_data)
+        if df is None: 
+            continue
+        
+        feat_df = engineer_live(df, t, sp_close, macros)
+        
+        features = joblib.load(os.path.join(MODELS_DIR, f"{rb}_feature_list.joblib"))
+        
+        # Ensure columns exist
         for f in features:
-            if f not in df_feat.columns: df_feat[f] = 0.0
-        
-        df_feat_ordered = df_feat[features]
-        latest = df_feat_ordered.iloc[-1]  
-        
-        if latest.isnull().any():
-            print("  Latest data has NaNs (from lagging/MAs), cannot predict."); continue
+            if f not in feat_df.columns: 
+                feat_df[f] = 0.0
             
-        X_latest = latest.values.reshape(1, -1)
-        X_scaled = scaler.transform(X_latest)
+        latest = feat_df.iloc[-1]
+        current_atr = latest['ATR_current']
         
-        prob_bullish = 0.0
-        try:
-            if chosen_model_type == 'xgb':
-                model = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib"))
-                prob_bullish = model.predict_proba(X_scaled)[0][1]
-            elif chosen_model_type == 'lr':
-                model = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
-                prob_bullish = model.predict_proba(X_scaled)[0][1]
-            elif chosen_model_type == 'ensemble':
-                model_xgb = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_xgb_calibrated.joblib"))
-                model_lr = joblib.load(os.path.join(MODELS_DIR, f"{regime_base}_lr_calibrated.joblib"))
-                prob_bullish = (model_xgb.predict_proba(X_scaled)[0][1] + model_lr.predict_proba(X_scaled)[0][1]) / 2.0
-        except Exception as e:
-            print(f"  Error loading chosen model: {e}. Skipping."); continue
-
-        # --- REMOVED VIX VETO LOGIC ---
-
-        model_name = f"{chosen_model_type.upper()} ({regime_base})"
+        X_raw = latest[features].values.reshape(1, -1)
         
-        # --- FIX: Use raw DataFrame Close for Entry Price ---
-        last_close = df['Close'].iloc[-1] 
+        # Check for NaNs (e.g. if not enough history)
+        if np.isnan(X_raw).any(): 
+            print(f"[{t}] Skipping: NaNs in features (insufficient history)")
+            continue
         
-        print(f"  Chosen model: {model_name}")
+        scaler = joblib.load(os.path.join(MODELS_DIR, f"{rb}_scaler.joblib"))
+        model = joblib.load(os.path.join(MODELS_DIR, f"{rb}_{choice['model_type']}_calibrated.joblib"))
+        
+        prob = model.predict_proba(scaler.transform(X_raw))[0][1]
         
         direction = "HOLD"
-        if prob_bullish >= conf_thresh_bullish: direction = "BULLISH"
-        elif prob_bullish <= conf_thresh_bearish: direction = "BEARISH"
+        if prob >= choice['thresholds']['bull']: 
+            direction = "BULLISH"
+        elif prob <= choice['thresholds']['bear']: 
+            direction = "BEARISH"
 
         if direction != "HOLD":
-            print(f"  Prediction (5-Day Horizon): {direction} [TRADE SIGNAL]")
-            conf_pct = prob_bullish if direction == "BULLISH" else (1 - prob_bullish)
-            print(f"  Confidence: {conf_pct*100:.2f}% (>= {conf_thresh_bullish*100:.0f}%)")
+            last_close = float(df['Close'].iloc[-1])
+            sl = last_close - (current_atr * ATR_SL_MULT) if direction == "BULLISH" else last_close + (current_atr * ATR_SL_MULT)
+            tp = last_close + (current_atr * ATR_TP_MULT) if direction == "BULLISH" else last_close - (current_atr * ATR_TP_MULT)
+            
+            signal = {
+                "ticker": t,
+                "direction": direction,
+                "confidence": float(prob),
+                "entry_price": last_close,
+                "stop_loss": float(sl),
+                "take_profit": float(tp),
+                "model_regime": model_regime,
+                "model_type": choice['model_type'],
+                "model_version": MODEL_VERSION,
+                "timestamp": timestamp,
+                "vix_value": vix_value,
+                "vix_regime": vix_regime,
+                "atr_current": float(current_atr)
+            }
+            
+            signals_list.append(signal)
+            print(f"[{t}] {direction} signal detected (confidence: {prob:.2%})")
 
-            last_atr = df_feat.iloc[-1].get('ATR_current', np.nan)
-            if np.isnan(last_atr) or last_atr <= 0:
-                print("  Error: Invalid ATR. Skipping.")
-                print("-" * 30); continue
-
-            # --- EXITS ---
-            atr_sl_dist = last_atr * ATR_SL_MULT
-            atr_tp_dist = last_atr * ATR_TP_MULT
-            
-            if direction == "BULLISH":
-                sl_price = last_close - atr_sl_dist
-                tp_price = last_close + atr_tp_dist
-            else:
-                sl_price = last_close + atr_sl_dist
-                tp_price = last_close - atr_tp_dist
-            
-            print(f"  Entry Price: {last_close:.4f}")
-            print(f"  Suggested ATR SL ({ATR_SL_MULT}x): {sl_price:.4f}")
-            print(f"  Suggested ATR TP ({ATR_TP_MULT}x): {tp_price:.4f}")
-            
-            # --- REMOVED RISK / LOT CALCULATIONS ---
-        else:
-            print(f"  Prediction: HOLD (Prob: {prob_bullish*100:.1f}%)")
-            
-        print("-" * 30)
-
-    print("\n" + "="*70)
-    print(" End of Live Market Direction Report")
-    print("="*70)
+    # --- OUTPUT STRUCTURED JSON ---
+    output_payload = {
+        "timestamp": timestamp,
+        "model_version": MODEL_VERSION,
+        "vix_value": vix_value,
+        "vix_regime": vix_regime,
+        "signals_count": len(signals_list),
+        "signals": signals_list
+    }
+    
+    print(f"\n[OUTPUT] {len(signals_list)} signal(s) generated")
+    print(json.dumps(output_payload, indent=2))

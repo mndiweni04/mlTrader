@@ -1,0 +1,62 @@
+{
+  "si_f": {
+    "last_trained": "2026-01-28T19:46:11.234262",
+    "training_samples": 130,
+    "validation_samples": 22,
+    "calibration_method": "sigmoid",
+    "best_iteration": 4,
+    "scale_pos_weight": 2.4055692927424053,
+    "xgb_model": "si_f_xgb_calibrated.joblib",
+    "lr_model": "si_f_lr_calibrated.joblib"
+  },
+  "ng_f_low_vix": {
+    "last_trained": "2026-01-28T19:46:11.479671",
+    "training_samples": 754,
+    "validation_samples": 136,
+    "calibration_method": "isotonic",
+    "best_iteration": 3,
+    "scale_pos_weight": 1.0402965316744204,
+    "xgb_model": "ng_f_low_vix_xgb_calibrated.joblib",
+    "lr_model": "ng_f_low_vix_lr_calibrated.joblib"
+  },
+  "ng_f_high_vix": {
+    "last_trained": "2026-01-28T19:46:11.713622",
+    "training_samples": 288,
+    "validation_samples": 57,
+    "calibration_method": "isotonic",
+    "best_iteration": 9,
+    "scale_pos_weight": 1.082111164479916,
+    "xgb_model": "ng_f_high_vix_xgb_calibrated.joblib",
+    "lr_model": "ng_f_high_vix_lr_calibrated.joblib"
+  },
+  "eurusd_x": {
+    "last_trained": "2026-01-28T19:46:12.111055",
+    "training_samples": 1476,
+    "validation_samples": 263,
+    "calibration_method": "isotonic",
+    "best_iteration": 22,
+    "scale_pos_weight": 0.9195639646519105,
+    "xgb_model": "eurusd_x_xgb_calibrated.joblib",
+    "lr_model": "eurusd_x_lr_calibrated.joblib"
+  },
+  "jpyusd_x_low_vix": {
+    "last_trained": "2026-01-28T19:46:12.388324",
+    "training_samples": 1062,
+    "validation_samples": 208,
+    "calibration_method": "isotonic",
+    "best_iteration": 5,
+    "scale_pos_weight": 0.8877603802585922,
+    "xgb_model": "jpyusd_x_low_vix_xgb_calibrated.joblib",
+    "lr_model": "jpyusd_x_low_vix_lr_calibrated.joblib"
+  },
+  "jpyusd_x_high_vix": {
+    "last_trained": "2026-01-28T19:46:12.612125",
+    "training_samples": 468,
+    "validation_samples": 97,
+    "calibration_method": "isotonic",
+    "best_iteration": 1,
+    "scale_pos_weight": 0.809337680387781,
+    "xgb_model": "jpyusd_x_high_vix_xgb_calibrated.joblib",
+    "lr_model": "jpyusd_x_high_vix_lr_calibrated.joblib"
+  }
+}

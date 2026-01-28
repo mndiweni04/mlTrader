@@ -1,290 +1,278 @@
 # run_trader.py
-"""
-Runs the live prediction script and emails a notification if a trade is found.
-This is the main file for your daily alerts.
-"""
-
 import subprocess
 import sys
 import os
+import csv
+import hashlib
 from datetime import datetime
 import pytz
-from send_notification import send_email 
-import csv 
-import hashlib 
+import json
+from send_notification import send_email
+
+# --- POSITION SIZING & RISK MANAGEMENT ---
+ACCOUNT_BALANCE = 10000.0      # Placeholder: $10k account
+RISK_PCT = 0.02                # Risk 2% per trade
+TICK_SIZE = {
+    "CL=F": 0.01,    # Crude Oil: $10 per tick
+    "GC=F": 0.1,     # Gold: $10 per tick
+    "SI=F": 0.005,   # Silver: $25 per tick
+    "NG=F": 0.001,   # Natural Gas: $10 per tick
+    "ZC=F": 0.25,    # Corn: $12.50 per tick
+    "EURUSD=X": 0.0001, # FX: 1 pip = variable
+    "JPYUSD=X": 0.01,   # FX inverse
+    "ES=F": 0.25,    # S&P 500: $12.50 per tick
+    "NQ=F": 0.25,    # Nasdaq: $20 per tick
+}
+
+POINT_VALUE = {
+    "CL=F": 1000,    # $1000 per contract per $1
+    "GC=F": 100,     # $100 per contract per $1
+    "SI=F": 5000,    # $5000 per contract per $1
+    "NG=F": 10000,   # $10,000 per contract per $1
+    "ZC=F": 50,      # $50 per contract per $0.25 (bushel)
+    "EURUSD=X": 100000,  # 100k units standard lot
+    "JPYUSD=X": 100000,  # 100k units
+    "ES=F": 50,      # $50 per contract per point
+    "NQ=F": 20,      # $20 per contract per point
+} 
 
 LOGS_DIR = "logs"
-TRADES_LOG_FILE = os.path.join(LOGS_DIR, "live_trades_log.csv")
+STATUS_LOG = os.path.join(LOGS_DIR, "bot_status.log")
+TRADES_LOG = os.path.join(LOGS_DIR, "live_trades_log.csv")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-def run_predictions():
-    print("Running predict.py...")
-    python_exe = sys.executable
-    script_path = os.path.join(os.path.dirname(__file__), "predict.py")
+def calculate_position_size(entry_price, stop_loss, ticker):
+    """
+    Calculate position size (lots) based on risk management rules.
     
-    if not os.path.exists(script_path):
-        print(f"Error: {script_path} not found.")
-        return None, "File not found"
+    Formula: Lots = (Account_Balance * Risk_Pct) / (abs(Entry - SL) * Point_Value)
+    
+    Args:
+        entry_price (float): Entry price
+        stop_loss (float): Stop loss price
+        ticker (str): Ticker symbol
+    
+    Returns:
+        tuple: (lots, risk_dollars) - Rounded to 2 decimals
+    """
+    if ticker not in POINT_VALUE:
+        return 0.0, 0.0
+    
+    price_distance = abs(entry_price - stop_loss)
+    if price_distance <= 0:
+        return 0.0, 0.0
+    
+    risk_dollars = ACCOUNT_BALANCE * RISK_PCT
+    point_value = POINT_VALUE[ticker]
+    
+    # Lots = Risk_Dollars / (Price_Distance * Point_Value)
+    lots = risk_dollars / (price_distance * point_value)
+    lots = round(lots, 2)
+    
+    return lots, round(risk_dollars, 2)
 
+def dispatch_signal(signal):
+    """
+    Dispatch a trade signal to execution venue.
+    
+    Currently: Sends email notification
+    Future: POST to execution webhook or broker API
+    
+    API Stub Example:
+        response = requests.post(
+            'https://api.execution.example.com/v1/orders',
+            json=signal,
+            headers={'Authorization': f'Bearer {API_KEY}'}
+        )
+        return response.status_code == 200
+    
+    Args:
+        signal (dict): Signal dict with all execution parameters
+    
+    Returns:
+        bool: True if dispatch successful
+    """
     try:
-        process = subprocess.run(
-            [python_exe, script_path],
+        # --- CURRENT: Send email notification ---
+        email_body = f"""
+Trade Signal Generated:
+Ticker: {signal['ticker']}
+Direction: {signal['direction']}
+Confidence: {signal['confidence']:.2%}
+Entry: {signal['entry_price']:.4f}
+Stop Loss: {signal['stop_loss']:.4f}
+Take Profit: {signal['take_profit']:.4f}
+Lots: {signal['lots']}
+Risk: ${signal['risk_dollars']:.2f}
+"""
+        send_email(f"Trade Signal: {signal['ticker']}", email_body)
+        
+        # --- FUTURE: API Dispatch ---
+        # import requests
+        # response = requests.post(
+        #     'https://broker-api.example.com/orders',
+        #     json=signal,
+        #     timeout=10
+        # )
+        # return response.status_code in [200, 201]
+        
+        return True
+    except Exception as e:
+        log_audit(False, f"Dispatch Error: {e}")
+        return False
+
+def log_signals_to_csv(signals):
+    # Read-Check-Write protocol (IDEMPOTENCY PRESERVED)
+    existing_hashes = set()
+    if os.path.exists(TRADES_LOG):
+        try:
+            with open(TRADES_LOG, 'r', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    existing_hashes.add(row['signal_hash'])
+        except IOError as e:
+            log_audit(False, f"CSV Lock Error: {e}")
+            return []
+
+    unique_signals = [s for s in signals if s['signal_hash'] not in existing_hashes]
+    
+    if signals and not unique_signals:
+        log_audit(True, "Signals detected but already logged. Skipping write.")
+        return []
+
+    if unique_signals:
+        try:
+            # CSV Safety: Headers check and append mode
+            write_header = not os.path.exists(TRADES_LOG)
+            with open(TRADES_LOG, 'a', newline='') as f:
+                fieldnames = ['trade_id', 'signal_hash', 'prediction_date', 'ticker', 'direction', 
+                            'confidence', 'entry_price', 'stop_loss', 'take_profit', 
+                            'lots', 'risk_dollars', 'model_regime', 'status']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if write_header: 
+                    writer.writeheader()
+                for s in unique_signals:
+                    writer.writerow({
+                        'trade_id': f"{s['prediction_date']}-{s['ticker']}",
+                        'signal_hash': s['signal_hash'],
+                        'prediction_date': s['prediction_date'],
+                        'ticker': s['ticker'],
+                        'direction': s['direction'],
+                        'confidence': f"{s['confidence']:.4f}",
+                        'entry_price': f"{s['entry_price']:.4f}",
+                        'stop_loss': f"{s['stop_loss']:.4f}",
+                        'take_profit': f"{s['take_profit']:.4f}",
+                        'lots': f"{s['lots']:.2f}",
+                        'risk_dollars': f"{s['risk_dollars']:.2f}",
+                        'model_regime': s['model_regime'],
+                        'status': 'OPEN'
+                    })
+        except Exception as e:
+            log_audit(False, f"File I/O Error: {e}")
+    return unique_signals
+
+def log_audit(success, msg):
+    """Log audit trail to status log."""
+    timestamp = datetime.now(pytz.timezone("Africa/Johannesburg")).isoformat()
+    status_str = "[SUCCESS]" if success else "[ERROR]"
+    try:
+        with open(STATUS_LOG, "a") as f:
+            f.write(f"{status_str} {timestamp} | {msg}\n")
+    except Exception as e:
+        print(f"[WARNING] Failed to write audit log: {e}")
+
+def get_python_executable():
+    """Return the current Python executable path."""
+    return sys.executable
+
+def check_for_signals():
+    """
+    Execute predict.py and parse JSON output for trade signals.
+    
+    Returns:
+        list: Processed signals with position sizing
+    """
+    try:
+        result = subprocess.run(
+            [get_python_executable(), 'predict.py'],
             capture_output=True,
             text=True,
-            timeout=600 
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=60
         )
         
-        if process.returncode != 0:
-            print("--- predict.py FAILED ---")
-            print(process.stderr)
-            print("-------------------------")
-            return None, process.stderr
-            
-        return process.stdout, None
+        if result.returncode != 0:
+            log_audit(False, f"predict.py execution failed: {result.stderr[:200]}")
+            return []
         
-    except Exception as e:
-        print(f"An error occurred while running subprocess: {e}")
-        return None, str(e)
-
-def generate_signal_hash(date, ticker, regime, direction, version, confidence):
-    """
-    Creates a cryptographically unique ID for the signal.
-    """
-    # Round confidence to 1 decimal to avoid floating point drift
-    try:
-        conf_val = float(confidence)
-        conf_str = f"{conf_val:.1f}"
-    except:
-        conf_str = str(confidence)
-
-    raw_str = f"{date}|{ticker}|{regime}|{direction}|{version}|{conf_str}"
-    return hashlib.sha256(raw_str.encode()).hexdigest()
-
-# --- RESTORED FUNCTION ---
-def get_open_trades_state():
-    """
-    Reads the log to determine:
-    1. Which tickers currently have an 'OPEN' trade.
-    2. Which signal hashes have already been processed.
-    """
-    open_tickers = set()
-    existing_hashes = set()
-    
-    if not os.path.exists(TRADES_LOG_FILE):
-        return open_tickers, existing_hashes
-    
-    try:
-        with open(TRADES_LOG_FILE, 'r', newline='') as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return open_tickers, existing_hashes
-            
-            for row in reader:
-                # Track existing hashes for deduplication
-                if 'signal_hash' in row and row['signal_hash']:
-                    existing_hashes.add(row['signal_hash'])
-                
-                # Track OPEN tickers to freeze them
-                if row.get('status') == 'OPEN':
-                    open_tickers.add(row['ticker'])
-                    
-    except Exception as e:
-        print(f"Warning: Could not read log file: {e}")
-        
-    return open_tickers, existing_hashes
-# -------------------------
-
-def check_for_signals(output):
-    if output is None: return []
-    signals = []
-    lines = output.split('\n')
-    
-    prediction_date = datetime.now(pytz.timezone("Africa/Johannesburg")).strftime('%Y-%m-%d')
-    for line in lines:
-        if "Generated (SAST):" in line:
-            try:
-                ts_str = line.replace("Generated (SAST):", "").strip()
-                dt_obj = datetime.strptime(ts_str.split(' SAST')[0], '%Y-%m-%d %H:%M:%S')
-                prediction_date = dt_obj.strftime('%Y-%m-%d')
-            except: pass
-            break
-    
-    def find_value_in_lines(start_idx, keyword, split_char=':'):
-        for k in range(start_idx, min(start_idx + 15, len(lines))):
-            if keyword in lines[k]:
-                parts = lines[k].split(split_char)
-                if len(parts) > 1:
-                    return parts[-1].strip()
-        return None
-
-    for i, line in enumerate(lines):
-        if "[TRADE SIGNAL]" in line:
-            try:
-                ticker_line = ""; model_line = ""
-                for j in range(i - 1, max(0, i - 15), -1):
-                    if lines[j].startswith("---") and lines[j].endswith("---"):
-                        ticker_line = lines[j]; break
-                    if "Chosen model:" in lines[j]: model_line = lines[j]
-                
-                if not ticker_line: continue
-                current_ticker = ticker_line.strip().replace("---", "").strip()
-                
-                model_regime = "unknown"
-                model_version = "v3.6" 
-                
-                if model_line:
-                    if "(" in model_line: model_regime = model_line.split('(')[-1].replace(')', '').strip()
-                    else: model_regime = model_line.split(':')[-1].strip()
-
-                direction = line.split('[')[0].split(':')[-1].strip()
-                
-                confidence = "0.0"
-                conf_val = find_value_in_lines(i, "Confidence", ':')
-                if conf_val: confidence = conf_val.replace('%', '').split('(')[0].strip()
-                
-                entry_price = "0.0"
-                price_val = find_value_in_lines(i, "Entry Price", ':')
-                if price_val: entry_price = price_val
-                
-                stop_loss = "0.0"
-                sl_val = find_value_in_lines(i, "Suggested ATR SL", ':')
-                if sl_val: stop_loss = sl_val
-                
-                take_profit = "0.0"
-                tp_val = find_value_in_lines(i, "Suggested ATR TP", ':')
-                if tp_val: take_profit = tp_val
-                
-                lots = "1.00" # Default for ledger
-
-                sig_hash = generate_signal_hash(prediction_date, current_ticker, model_regime, direction, model_version, confidence)
-
-                signal_details = {
-                    "prediction_date": prediction_date,
-                    "ticker": current_ticker,
-                    "model_regime": model_regime,
-                    "model_version": model_version,
-                    "direction": direction,
-                    "confidence": confidence,
-                    "entry_price": entry_price,
-                    "stop_loss": stop_loss,
-                    "take_profit": take_profit,
-                    "lots": lots,
-                    "risk_dollars": "MANUAL", 
-                    "size_pct": f"{float(confidence):.2f}%", 
-                    "signal_hash": sig_hash
-                }
-                signals.append(signal_details)
-            except Exception as e:
-                print(f"Error parsing signal for {current_ticker}: {e}")
-
-    return signals
-
-def log_signals_to_csv(signals_list):
-    # --- RESTORED: Get open tickers ---
-    open_tickers, existing_hashes = get_open_trades_state()
-
-    fieldnames = [
-        'trade_id', 'signal_hash', 'prediction_date', 'ticker', 'model_regime', 'model_version',
-        'direction', 'entry_price', 'stop_loss', 'take_profit', 
-        'lots', 'risk_dollars', 'confidence', 'status', 
-        'close_date', 'close_price', 'pnl'
-    ]
-    
-    rows_to_add = []
-    valid_signals = []
-
-    for sig in signals_list:
-        # --- RESTORED RULE: Freeze OPEN trades ---
-        if sig['ticker'] in open_tickers:
-            print(f"  [Log] {sig['ticker']} is already OPEN. Skipping new signal.")
-            continue
-            
-        # Rule 2: Idempotency
-        if sig['signal_hash'] in existing_hashes:
-            print(f"  [Log] Duplicate signal suppressed: {sig['ticker']}")
-            continue
-
-        status = 'OPEN'
-        sig['lots'] = "1.00" 
-        
-        trade_id = f"{sig['prediction_date'].replace('-','')}-{sig['ticker']}"
-
-        row = {
-            'trade_id': trade_id,
-            'signal_hash': sig['signal_hash'],
-            'prediction_date': sig['prediction_date'],
-            'ticker': sig['ticker'],
-            'model_regime': sig['model_regime'],
-            'model_version': sig.get('model_version', 'v3.6'),
-            'direction': sig['direction'],
-            'entry_price': sig['entry_price'],
-            'stop_loss': sig['stop_loss'],
-            'take_profit': sig['take_profit'],
-            'lots': sig['lots'],
-            'risk_dollars': sig['risk_dollars'],
-            'confidence': sig['confidence'],
-            'status': status,
-            'close_date': '', 'close_price': '', 'pnl': ''
-        }
-        rows_to_add.append(row)
-        
-        if status == 'OPEN':
-            valid_signals.append(sig)
-
-    if rows_to_add:
+        # Parse JSON output from predict.py (v4.0 format)
         try:
-            file_exists = os.path.isfile(TRADES_LOG_FILE)
-            with open(TRADES_LOG_FILE, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                if not file_exists: writer.writeheader()
-                writer.writerows(rows_to_add)
-            print(f"✅ Logged {len(rows_to_add)} new entries.")
-        except Exception as e:
-            print(f"--- ERROR writing to log: {e}")
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            log_audit(False, f"Invalid JSON from predict.py: {str(e)[:200]}")
+            return []
+        
+        signals = payload.get('signals', [])
+        if not signals:
+            log_audit(True, f"No signals generated. VIX={payload.get('vix_value', 'N/A')}, Regime={payload.get('vix_regime', 'N/A')}")
+            return []
+        
+        # Convert JSON signals to CSV-ready format with position sizing
+        processed_signals = []
+        for sig in signals:
+            if sig.get('direction') == 'HOLD':
+                continue
+                
+            # Calculate position size
+            lots, risk_dollars = calculate_position_size(
+                sig['entry_price'], 
+                sig['stop_loss'], 
+                sig['ticker']
+            )
             
-    return valid_signals
+            # Generate hash for deduplication
+            hash_input = f"{sig['ticker']}_{sig['direction']}_{datetime.now().strftime('%Y%m%d')}"
+            signal_hash = hashlib.md5(hash_input.encode()).hexdigest()[:8]
+            
+            processed_signals.append({
+                'prediction_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'ticker': sig['ticker'],
+                'direction': sig['direction'],
+                'confidence': sig['confidence'],
+                'entry_price': sig['entry_price'],
+                'stop_loss': sig['stop_loss'],
+                'take_profit': sig['take_profit'],
+                'lots': lots,
+                'risk_dollars': risk_dollars,
+                'model_regime': sig['model_regime'],
+                'signal_hash': signal_hash
+            })
+        
+        log_audit(True, f"Generated {len(processed_signals)} signals (VIX={payload.get('vix_value', 'N/A')}, Regime={payload.get('vix_regime', 'N/A')})")
+        return processed_signals
+        
+    except subprocess.TimeoutExpired:
+        log_audit(False, "predict.py timed out (60s)")
+        return []
+    except Exception as e:
+        log_audit(False, f"Unexpected error in check_for_signals: {str(e)[:200]}")
+        return []
 
 if __name__ == "__main__":
-    now = datetime.now(pytz.timezone("Africa/Johannesburg"))
-    print("="*50)
-    print(" ML TRADER BOT - DAILY SIGNAL CHECKER")
-    print(f" {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print("="*50)
-
-    output, error = run_predictions()
-    
-    if error:
-        print("\nCould not generate predictions.")
-        send_email("ML Trader Alert: BOT FAILED", f"Error:\n{error}")
-    else:
-        print("\n--- Full Prediction Report ---")
-        print(output)
-        print("--- End of Report ---")
+    try:
+        signals = check_for_signals()
+        unique_signals = log_signals_to_csv(signals)
         
-        signals = check_for_signals(output)
-        
-        if signals:
-            print("\n" + "!"*50)
-            print(" Processing Signals...")
-            
-            actionable = log_signals_to_csv(signals)
-            
-            if actionable:
-                print(f" 🔔 NOTIFICATION: {len(actionable)} TRADES OPENED! 🔔")
-                email_subject = f"ML Trader: {len(actionable)} New Trades"
-                email_body = "New OPEN trades found (Manual Sizing Required):\n\n"
-                for sig in actionable:
-                    email_body += (
-                        f"------------------------\n"
-                        f"ASSET:         {sig['ticker']} ({sig['model_regime']})\n"
-                        f"DIRECTION:     {sig['direction']}\n"
-                        f"ENTRY:         {sig['entry_price']}\n"
-                        f"STOP LOSS:     {sig['stop_loss']}\n"
-                        f"TAKE PROFIT:   {sig['take_profit']}\n"
-                        f"------------------------\n"
-                    )
-                send_email(subject=email_subject, body=email_body)
-            else:
-                print("\nAll signals suppressed (Duplicates or Already Open).")
+        if unique_signals:
+            # Send summary email
+            email_subject = f"ML Trader: {len(unique_signals)} New Signals"
+            email_body = f"Generated {len(unique_signals)} new trade signals\n\n"
+            for sig in unique_signals:
+                email_body += f"{sig['ticker']} {sig['direction']}: {sig['lots']} lots (Risk: ${sig['risk_dollars']:.2f})\n"
+            send_email(email_subject, email_body)
+            log_audit(True, f"Dispatched {len(unique_signals)} signals")
         else:
-            print("\n 💤 No new trade signals found.")
+            log_audit(True, "No new signals to log")
+            
+    except Exception as e:
+        log_audit(False, f"Runner Error: {e}")

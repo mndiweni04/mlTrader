@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils import resample
 import warnings
 import yfinance as yf
 import talib # <-- NEW: Import TAlib
@@ -107,8 +108,13 @@ for t in TICKERS:
     # Volume
     has_volume = 'Volume' in df.columns and df['Volume'].sum() > 0
     if has_volume:
-        features_df['OBV'] = talib.OBV(close, volume)
-    # --- *** END: NEW TALIB FEATURES *** ---
+        features_df['OBV'] = talib.OBV(close, volume)    
+    # --- NEW: Intraday Volatility Features for Quiet Markets (ES=F, NQ=F) ---
+    # Day Range Pct: (High - Low) / Close (captures intraday volatility)
+    features_df['Day_Range_Pct'] = (df['High'] - df['Low']) / (df['Close'] + 1e-12)
+    
+    # Distance from MA20: (Close - MA20) / MA20 (captures price position relative to trend)
+    features_df['Dist_from_MA20'] = (df['Close'] - features_df['MA20']) / (features_df['MA20'] + 1e-12)    # --- *** END: NEW TALIB FEATURES *** ---
     
     # --- Macro Features ---
     if "^VIX" in macro_data:
@@ -159,10 +165,30 @@ for t in TICKERS:
 
     feature_cols = list(features_df.columns) 
 
-    df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
-    df['label'] = (df['future_return'] > 0).astype(int) 
+    # --- REFINED TRIPLE BARRIER LABELING (ATR * 0.20) ---
+    # Calculate ATR for the entire series (for labeling purposes)
+    high = df['High'].astype(np.float64).values
+    low = df['Low'].astype(np.float64).values
+    close = df['Close'].astype(np.float64).values
+    atr_values = talib.ATR(high, low, close, timeperiod=14)
     
-    df_full = features_df.join(df['label'])
+    df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
+    
+    # Refined Triple Barrier: Thresholds based on ATR * 0.20 (more inclusive than 0.5)
+    barrier_threshold = atr_values * 0.20
+    
+    # Initialize labels as NaN (neutral zone)
+    df['label'] = np.nan
+    
+    # Class 1 (Bullish): future_return > (ATR * 0.20)
+    df.loc[df['future_return'] > barrier_threshold, 'label'] = 1
+    
+    # Class 0 (Bearish): future_return < -(ATR * 0.20)
+    df.loc[df['future_return'] < -barrier_threshold, 'label'] = 0
+    
+    # Neutral zone (within noise band) remains NaN and will be dropped
+    
+    df_full = features_df.join(df[['label']])
     
     df_full[feature_cols] = df_full[feature_cols].shift(1)
     
@@ -209,9 +235,49 @@ for t in TICKERS:
         df_val = df_split.iloc[n_train:n_train + n_val]
         df_test = df_split.iloc[n_train + n_val:]
         
-        X_train = df_train[feature_cols].values; y_train = df_train['label'].values
-        X_val = df_val[feature_cols].values; y_val = df_val['label'].values
-        X_test = df_test[feature_cols].values; y_test = df_test['label'].values
+        # --- HARD CLASS BALANCING (NEW) ---
+        # Extract labels and check for neutral zone (NaN values)
+        y_train_full = df_train['label'].values
+        mask_valid_train = ~np.isnan(y_train_full)
+        
+        if np.sum(mask_valid_train) < 10:
+            print(f"  Skipping regime '{suffix}': Insufficient labeled samples after removing neutral zone ({np.sum(mask_valid_train)} valid labels).")
+            continue
+        
+        # Filter to only labeled samples (remove neutral zone)
+        df_train_labeled = df_train[mask_valid_train].copy()
+        
+        # Count class distribution
+        class_0_mask = df_train_labeled['label'].astype(int) == 0
+        class_1_mask = df_train_labeled['label'].astype(int) == 1
+        
+        n_class_0 = np.sum(class_0_mask)
+        n_class_1 = np.sum(class_1_mask)
+        
+        # Determine minority class and balance
+        if n_class_0 > 0 and n_class_1 > 0:
+            min_class_size = min(n_class_0, n_class_1)
+            
+            # Resample to exact balance
+            df_class_0 = df_train_labeled[class_0_mask]
+            df_class_1 = df_train_labeled[class_1_mask]
+            
+            df_class_0_balanced = resample(df_class_0, n_samples=min_class_size, random_state=42, replace=False)
+            df_class_1_balanced = resample(df_class_1, n_samples=min_class_size, random_state=42, replace=False)
+            
+            df_train_balanced = pd.concat([df_class_0_balanced, df_class_1_balanced], axis=0).sort_index()
+            
+            print(f"    Hard Balancing: Class 0={min_class_size}, Class 1={min_class_size} (removed neutral zone, dropped {n_train - len(df_train_balanced)} rows)")
+        else:
+            print(f"  Skipping regime '{suffix}': Missing one or both classes after triple barrier filtering.")
+            continue
+        
+        X_train = df_train_balanced[feature_cols].values
+        y_train = df_train_balanced['label'].astype(int).values
+        X_val = df_val[feature_cols].values
+        y_val = df_val['label'].astype(int).values
+        X_test = df_test[feature_cols].values
+        y_test = df_test['label'].astype(int).values
 
         scaler = StandardScaler().fit(X_train)
         X_train_s = scaler.transform(X_train)
@@ -237,5 +303,5 @@ for t in TICKERS:
             print(f"    WARNING: Regime '{suffix}' has only one class. Model will likely fail.")
 
 print("\n" + "="*50)
-print(" ✅ process_data.py (v6 - TALIB) FINISHED ")
+print(" [OK] process_data.py (Phase 4 - ATR*0.20) FINISHED ")
 print("="*50 + "\n")
