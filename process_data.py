@@ -38,22 +38,17 @@ for mt in MACRO_TICKERS:
     df = load_raw(mt)
     if df is not None: macro_data[mt] = df
 
-try:
-    sp_df = load_raw("ES=F")
-    if sp_df is None:
-        sp_df = yf.download("ES=F", period="10y", interval="1d", progress=False)
-        sp_df.columns = [c.title() for c in sp_df.columns]
-    SP_CLOSE = sp_df['Close'].pct_change()
-except Exception:
-    SP_CLOSE = None
-            
 for t in TICKERS:
     df = load_raw(t)
-    if df is None: continue
+    if df is None: 
+        print(f"Skipping {t}: Raw file not found.")
+        continue
 
     print(f"\nProcessing {t} ...")
     base = t.replace('=','_').lower() 
     df = df.copy().sort_index()
+    
+    # Save test prices for backtesting later
     df['Close'].to_csv(os.path.join(PROC_DIR, f"{base}_test_prices.csv"))
 
     for col in ['High', 'Low', 'Close', 'Volume']:
@@ -88,6 +83,9 @@ for t in TICKERS:
         vix_c = macro_data["^VIX"]['Close'].reindex(df.index, method='ffill').astype(np.float64)
         features_df['VIX_Close'] = vix_c
         features_df['VIX_Regime'] = (vix_c > 20).astype(int)
+    else:
+        # Default to 0 if VIX missing, to allow code to run
+        features_df['VIX_Regime'] = 0
 
     # Labeling logic
     df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
@@ -97,13 +95,14 @@ for t in TICKERS:
     df.loc[df['future_return'] > barrier, 'label'] = 1
     df.loc[df['future_return'] < -barrier, 'label'] = 0
     
-    # Merge and handle empty data
+    # Merge
     df_full = features_df.join(df[['label', 'future_return']])
     
-    # If Triple Barrier is too restrictive, use simple binary returns
-    if df_full['label'].dropna().shape[0] < 100:
+    # Fallback to binary labeling if strict labeling leaves too little data
+    valid_labels = df_full['label'].dropna().shape[0]
+    if valid_labels < 100:
+        print(f"  [INFO] Low valid labels ({valid_labels}). Falling back to binary labeling.")
         df_full['label'] = (df_full['future_return'] > 0).astype(float)
-        print(f"  [INFO] Fallback to binary labeling for {t}")
 
     # Final cleanup: Shift features so we don't use today's data to predict today
     feature_cols = list(features_df.columns)
@@ -113,7 +112,7 @@ for t in TICKERS:
     df_full = df_full.dropna(subset=['label'] + feature_cols)
     
     if df_full.empty:
-        print(f"  [WARNING] No data remains for {t}")
+        print(f"  [WARNING] No data remains for {t} after dropping NaNs. Check data quality.")
         continue
 
     df_full['label'] = df_full['label'].astype(int)
@@ -123,8 +122,11 @@ for t in TICKERS:
                (df_full[df_full['VIX_Regime'] == 1], "_high_vix")] if t in TICKERS_TO_SPLIT else [(df_full, "")]
 
     for df_split, suffix in regimes:
-        if len(df_split) < 50: continue
         rb = f"{base}{suffix}"
+        
+        if len(df_split) < 50: 
+            print(f"  [SKIP] {rb}: Not enough data points ({len(df_split)} < 50).")
+            continue
         
         n = len(df_split)
         n_test = max(int(n * TEST_SIZE), 1)
@@ -137,7 +139,10 @@ for t in TICKERS:
         # Balance Training Set
         c0, c1 = df_train[df_train['label']==0], df_train[df_train['label']==1]
         ms = min(len(c0), len(c1))
-        if ms < 10: continue
+        
+        if ms < 5: 
+            print(f"  [SKIP] {rb}: Classes too imbalanced (min class size {ms} < 5).")
+            continue
         
         df_train_bal = pd.concat([resample(c0, n_samples=ms, random_state=42), 
                                   resample(c1, n_samples=ms, random_state=42)]).sort_index()
@@ -152,5 +157,6 @@ for t in TICKERS:
         joblib.dump(scaler, os.path.join(MODELS_DIR, f"{rb}_scaler.joblib"))
         joblib.dump(feature_cols, os.path.join(MODELS_DIR, f"{rb}_feature_list.joblib"))
         joblib.dump(df_test.index, os.path.join(MODELS_DIR, f"{rb}_test_indices.joblib"))
+        print(f"  [OK] Saved data for {rb}")
 
 print("\n[OK] process_data.py Finished")
