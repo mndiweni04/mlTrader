@@ -7,7 +7,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 import warnings
 import yfinance as yf
-import talib
+
+# Removed: import talib (Replaced with pure pandas implementation)
 
 warnings.filterwarnings('ignore')
 
@@ -24,6 +25,42 @@ VAL_SIZE = 0.15
 
 os.makedirs(PROC_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
+
+# --- Helper Functions (Replacements for TA-Lib) ---
+def calc_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    rs = gain / (loss + 1e-12)
+    return 100 - (100 / (1 + rs))
+
+def calc_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+def calc_bbands(series, period=20, std_dev=2):
+    mid = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper = mid + (std * std_dev)
+    lower = mid - (std * std_dev)
+    return upper, mid, lower
+
+def calc_atr(high, low, close, period=14):
+    high_low = high - low
+    high_close = np.abs(high - close.shift())
+    low_close = np.abs(low - close.shift())
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    return true_range.rolling(window=period).mean()
+
+def calc_obv(close, volume):
+    return (np.sign(close.diff()) * volume).fillna(0).cumsum()
+
+# --------------------------------------------------
 
 def load_raw(ticker):
     safe_ticker = ticker.replace('=','_').replace('^','').lower()
@@ -55,23 +92,27 @@ for t in TICKERS:
         df[col] = df[col].astype(np.float64)
 
     features_df = pd.DataFrame(index=df.index)
-    close = df['Close'].values
+    close = df['Close']
     
-    # Technical Indicators
-    features_df['MA5'] = talib.MA(close, 5)
-    features_df['MA20'] = talib.MA(close, 20)
-    features_df['MA50'] = talib.MA(close, 50)
-    features_df['MA200'] = talib.MA(close, 200)
+    # Technical Indicators (Pure Pandas)
+    features_df['MA5'] = close.rolling(window=5).mean()
+    features_df['MA20'] = close.rolling(window=20).mean()
+    features_df['MA50'] = close.rolling(window=50).mean()
+    features_df['MA200'] = close.rolling(window=200).mean()
     features_df['MA_diff'] = features_df['MA50'] - features_df['MA200']
-    features_df['ATR'] = talib.ATR(df['High'].values, df['Low'].values, close, 14)
-    u, m, lo = talib.BBANDS(close, 20, 2, 2, 0)
+    
+    features_df['ATR'] = calc_atr(df['High'], df['Low'], close, 14)
+    
+    u, m, lo = calc_bbands(close, 20, 2)
     features_df['BB_Width'] = (u - lo) / (m + 1e-12)
-    features_df['RSI14'] = talib.RSI(close, 14)
-    features_df['ROC10'] = talib.ROC(close, 10)
-    features_df['MACD'], features_df['MACD_signal'], features_df['MACD_hist'] = talib.MACD(close)
+    
+    features_df['RSI14'] = calc_rsi(close, 14)
+    features_df['ROC10'] = close.pct_change(periods=10) * 100
+    
+    features_df['MACD'], features_df['MACD_signal'], features_df['MACD_hist'] = calc_macd(close)
     
     if 'Volume' in df.columns and df['Volume'].sum() > 0:
-        features_df['OBV'] = talib.OBV(close, df['Volume'].values)
+        features_df['OBV'] = calc_obv(close, df['Volume'])
     
     features_df['Day_Range_Pct'] = (df['High'] - df['Low']) / (df['Close'] + 1e-12)
     features_df['Dist_from_MA20'] = (df['Close'] - features_df['MA20']) / (features_df['MA20'] + 1e-12)
@@ -84,12 +125,13 @@ for t in TICKERS:
         features_df['VIX_Close'] = vix_c
         features_df['VIX_Regime'] = (vix_c > 20).astype(int)
     else:
-        # Default to 0 if VIX missing, to allow code to run
         features_df['VIX_Regime'] = 0
 
     # Labeling logic
     df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
-    barrier = talib.ATR(df['High'].values, df['Low'].values, close, 14) * 0.20
+    
+    # Dynamic ATR Barrier for labeling
+    barrier = calc_atr(df['High'], df['Low'], close, 14) * 0.20
     
     df['label'] = np.nan
     df.loc[df['future_return'] > barrier, 'label'] = 1

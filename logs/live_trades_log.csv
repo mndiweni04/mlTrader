@@ -1,0 +1,1 @@
+trade_id,signal_hash,prediction_date,ticker,direction,confidence,entry_price,stop_loss,take_profit,lots,risk_dollars,model_regime,status

@@ -5,4 +5,4 @@ xgboost
 imblearn
 yfinance
 pytz
-TA-Lib
+matplotlib
