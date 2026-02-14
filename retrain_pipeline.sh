@@ -6,7 +6,6 @@ set -e
 
 # 1. Clear old raw data
 echo "--- 1. Clearing old raw data files ---"
-# rm -f (force) is the equivalent of Remove-Item -ErrorAction SilentlyContinue
 rm -f data/raw/*.csv
 echo "Old .csv files deleted."
 echo ""
@@ -44,6 +43,11 @@ echo "--- 6. Evaluating models ---"
 python evaluate_model.py
 echo ""
 
+# 6.5. Explain models (NEW)
+echo "--- 6.5. Explaining Model Decisions ---"
+python explain_model.py || echo "Warning: Explanation script failed, but continuing pipeline."
+echo ""
+
 # 7. Monitor open trades (Check before opening new ones)
 echo "--- 7. Monitoring open trades ---"
 python monitor_trades.py
@@ -54,8 +58,11 @@ echo "--- 8. Running trader (find/log new signals) ---"
 python run_trader.py
 echo ""
 
-# 9. Analyze results (Show the final P/L)
+# 9. Analyze results (Update logs & Show P/L)
 echo "--- 9. Analyzing Live Performance ---"
+# First update the logs with outcomes
+python analyze_performance.py
+# Then visualize the results
 python visualize_results.py
 echo ""
 
