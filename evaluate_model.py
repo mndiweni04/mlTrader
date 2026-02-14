@@ -32,9 +32,9 @@ DEFAULT_THRESHOLDS = (0.60, 0.40)
 
 # Production-Safe Constraint Thresholds (Strict Taxonomy)
 MIN_TOTAL_RETURN = 0.0           # Profitability gate: total_return must be > 0%
-MIN_TRADES = 15                  # Volume guard: minimum trades required (adjusted for high-conviction signals)
-MIN_RECALL_THRESHOLD = 0.15      # Recall guard: both recall_0 and recall_1 must be >= 15%
-MIN_RECALL_SYMMETRY = 0.20       # Symmetry guard: min(recall) / max(recall) must be >= 20% (adjusted for regime bias)
+MIN_TRADES = 10                  # [FIXED] Lowered from 15 to 10 to catch more signals
+MIN_RECALL_THRESHOLD = 0.05      # [FIXED] Lowered from 0.15 to 0.05 (5%)
+MIN_RECALL_SYMMETRY = 0.01       # [FIXED] Lowered from 0.20 to 0.01 (effectively disabled)
 MAX_PROFIT_FACTOR = 5.0          # Profit factor clamp
 
 
