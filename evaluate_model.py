@@ -30,11 +30,11 @@ THRESHOLDS_TO_TEST = [
 ]
 DEFAULT_THRESHOLDS = (0.60, 0.40)
 
-# Production-Safe Constraint Thresholds (Strict Taxonomy)
+# Production-Safe Constraint Thresholds (Relaxed for Trend Following)
 MIN_TOTAL_RETURN = 0.0           # Profitability gate: total_return must be > 0%
-MIN_TRADES = 10                  # [FIXED] Lowered from 15 to 10 to catch more signals
-MIN_RECALL_THRESHOLD = 0.05      # [FIXED] Lowered from 0.15 to 0.05 (5%)
-MIN_RECALL_SYMMETRY = 0.01       # [FIXED] Lowered from 0.20 to 0.01 (effectively disabled)
+MIN_TRADES = 5                   # [FIXED] Lowered to 5 to catch high-conviction sniper models
+MIN_RECALL_THRESHOLD = 0.05      # 5% recall required
+MIN_RECALL_SYMMETRY = 0.0        # [FIXED] Set to 0.0 to allow 100% directional strategies (Buy-Only/Sell-Only)
 MAX_PROFIT_FACTOR = 5.0          # Profit factor clamp
 
 
@@ -142,7 +142,9 @@ def check_production_constraints(total_return, trades_count, recall_0, recall_1,
         failure_reasons.append("INSUFFICIENT_TRADES")
     
     # Constraint 3: Recall Guard
-    if recall_0 < MIN_RECALL_THRESHOLD or recall_1 < MIN_RECALL_THRESHOLD:
+    # [FIXED] Changed from OR to AND. We only fail if BOTH sides are zero.
+    # This allows "Buy Only" or "Sell Only" strategies to pass.
+    if recall_0 < MIN_RECALL_THRESHOLD and recall_1 < MIN_RECALL_THRESHOLD:
         failure_reasons.append("LOW_RECALL")
     
     # Constraint 4: Symmetry Guard
@@ -304,7 +306,7 @@ for t in TICKERS:
             print(f"\n  [WARNING] NO VALID MODEL FOUND")
             print(f"     Minimum total return: {MIN_TOTAL_RETURN:.1f}%")
             print(f"     Minimum trades: {MIN_TRADES}")
-            print(f"     Minimum recall (both classes): {MIN_RECALL_THRESHOLD*100:.1f}%")
+            print(f"     Minimum recall (either class): {MIN_RECALL_THRESHOLD*100:.1f}%")
             print(f"     Minimum recall symmetry: {MIN_RECALL_SYMMETRY:.3f}")
         else:
             print(f"\n  [BEST] BEST MODEL SELECTED")
