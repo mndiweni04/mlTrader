@@ -4,6 +4,7 @@ import joblib
 import json
 import numpy as np
 import xgboost as xgb
+from catboost import CatBoostClassifier
 import warnings
 from datetime import datetime
 from sklearn.model_selection import TimeSeriesSplit
@@ -57,38 +58,40 @@ for ticker in TICKERS:
             continue
         avg_iter, avg_w = int(np.mean(iters)), np.mean(weights)
 
-        # FINAL FIX FOR SKLEARN 1.6+: 
-        # Use cv=None and ensemble=False to replicate 'prefit' behavior
-        
-        # XGBoost Calibration
         xgb_f = xgb.XGBClassifier(n_estimators=avg_iter, max_depth=4, scale_pos_weight=avg_w).fit(X_train, y_train)
         cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv="prefit")
-        # Fallback for strict environments: if 'prefit' still fails, the fit() will catch it
         try:
             cal_xgb.fit(X_val, y_val)
         except ValueError:
-            # Modern Sklearn fallback
             cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv=None, ensemble=False)
             cal_xgb.fit(X_val, y_val)
         joblib.dump(cal_xgb, os.path.join(MODELS_DIR, f"{rb}_xgb_calibrated.joblib"))
         
-        # Logistic Regression Calibration
         lr_f = LogisticRegression(class_weight="balanced", C=0.1).fit(X_train, y_train)
         cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv="prefit")
         try:
             cal_lr.fit(X_val, y_val)
         except ValueError:
-            # Modern Sklearn fallback
             cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv=None, ensemble=False)
             cal_lr.fit(X_val, y_val)
         joblib.dump(cal_lr, os.path.join(MODELS_DIR, f"{rb}_lr_calibrated.joblib"))
+
+        cb_f = CatBoostClassifier(iterations=avg_iter, depth=4, auto_class_weights='Balanced', verbose=0).fit(X_train, y_train)
+        cal_cb = CalibratedClassifierCV(estimator=cb_f, method=method, cv="prefit")
+        try:
+            cal_cb.fit(X_val, y_val)
+        except ValueError:
+            cal_cb = CalibratedClassifierCV(estimator=cb_f, method=method, cv=None, ensemble=False)
+            cal_cb.fit(X_val, y_val)
+        joblib.dump(cal_cb, os.path.join(MODELS_DIR, f"{rb}_cb_calibrated.joblib"))
         
         manifest[rb] = {
             "last_trained": datetime.now().isoformat(),
             "training_samples": int(n_samples),
             "calibration_method": method,
             "xgb_model": f"{rb}_xgb_calibrated.joblib",
-            "lr_model": f"{rb}_lr_calibrated.joblib"
+            "lr_model": f"{rb}_lr_calibrated.joblib",
+            "cb_model": f"{rb}_cb_calibrated.joblib"
         }
 
 with open(os.path.join(MODELS_DIR, "model_manifest.json"), 'w') as f:
