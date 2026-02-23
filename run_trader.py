@@ -13,11 +13,14 @@ LOGS_DIR = "logs"
 STATUS_LOG = os.path.join(LOGS_DIR, "bot_status.log")
 TRADES_LOG = os.path.join(LOGS_DIR, "live_trades_log.csv")
 
-# Ensure environment is ready for GitHub Action commit steps
 os.makedirs(LOGS_DIR, exist_ok=True)
 if not os.path.exists(TRADES_LOG):
     with open(TRADES_LOG, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['trade_id', 'signal_hash', 'prediction_date', 'ticker', 'direction', 'confidence', 'entry_price', 'stop_loss', 'take_profit', 'lots', 'risk_dollars', 'model_regime', 'status'])
+        writer = csv.DictWriter(f, fieldnames=[
+            'trade_id', 'signal_hash', 'prediction_date', 'ticker', 'direction', 
+            'confidence', 'entry_price', 'stop_loss', 'take_profit', 'allocation_zar', 
+            'kelly_percentage', 'model_regime', 'status'
+        ])
         writer.writeheader()
 
 def log_audit(success, msg):
@@ -33,22 +36,20 @@ def check_for_signals():
             log_audit(False, f"Predict failed: {result.stderr}")
             return []
         
-        payload = json.loads(result.stdout)
-        signals = payload.get('signals', [])
+        signals = json.loads(result.stdout)
         
         processed = []
         for sig in signals:
             if sig.get('direction') == 'HOLD': continue
             
-            # Position Sizing placeholder
-            lots, risk = 0.1, 20.0 
             h_input = f"{sig['ticker']}_{sig['direction']}_{datetime.now().strftime('%Y%m%d')}"
             
             processed.append({
                 'prediction_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'ticker': sig['ticker'], 'direction': sig['direction'], 'confidence': sig['confidence'],
-                'entry_price': sig['entry_price'], 'stop_loss': sig['stop_loss'], 'take_profit': sig['take_profit'],
-                'lots': lots, 'risk_dollars': risk, 'model_regime': sig['model_regime'],
+                'entry_price': sig['entry'], 'stop_loss': sig['sl'], 'take_profit': sig['tp'],
+                'allocation_zar': sig.get('allocation_zar', 0), 'kelly_percentage': sig.get('kelly_percentage', 0), 
+                'model_regime': sig.get('model_regime', 'standard'),
                 'signal_hash': hashlib.md5(h_input.encode()).hexdigest()[:8]
             })
         return processed
@@ -59,7 +60,6 @@ def check_for_signals():
 if __name__ == "__main__":
     sigs = check_for_signals()
     if sigs:
-        # Check for duplicates and log
         existing = set()
         with open(TRADES_LOG, 'r') as f:
             reader = csv.DictReader(f)
@@ -68,12 +68,16 @@ if __name__ == "__main__":
         new_sigs = [s for s in sigs if s['signal_hash'] not in existing]
         if new_sigs:
             with open(TRADES_LOG, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=['trade_id', 'signal_hash', 'prediction_date', 'ticker', 'direction', 'confidence', 'entry_price', 'stop_loss', 'take_profit', 'lots', 'risk_dollars', 'model_regime', 'status'])
+                writer = csv.DictWriter(f, fieldnames=[
+                    'trade_id', 'signal_hash', 'prediction_date', 'ticker', 'direction', 
+                    'confidence', 'entry_price', 'stop_loss', 'take_profit', 'allocation_zar', 
+                    'kelly_percentage', 'model_regime', 'status'
+                ])
                 for s in new_sigs:
                     s['status'] = 'OPEN'
                     writer.writerow(s)
             
-            body = "\n".join([f"{s['ticker']} {s['direction']}: {s['lots']} lots" for s in new_sigs])
+            body = "\n".join([f"{s['ticker']} {s['direction']} | Confidence: {s['confidence']:.2f} | Allocation: R{s['allocation_zar']} ({s['kelly_percentage']}%)" for s in new_sigs])
             send_email(f"ML Trader: {len(new_sigs)} New Signals", body)
             log_audit(True, f"Dispatched {len(new_sigs)} signals")
         else:
