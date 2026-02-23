@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
-from sklearn.utils import resample
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -31,13 +30,6 @@ def calc_rsi(series, period=14):
     rs = gain / (loss + 1e-12)
     return 100 - (100 / (1 + rs))
 
-def calc_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line, signal_line, macd_line - signal_line
-
 def calc_bbands(series, period=20, std_dev=2):
     mid = series.rolling(window=period).mean()
     std = series.rolling(window=period).std()
@@ -53,14 +45,22 @@ def calc_atr(high, low, close, period=14):
 def load_raw(ticker):
     safe_ticker = ticker.replace('=','_').replace('^','').lower()
     p = os.path.join(RAW_DIR, f"{safe_ticker}_1d_data.csv")
-    return pd.read_csv(p, index_col=0, parse_dates=True).sort_index() if os.path.exists(p) else None
+    if os.path.exists(p):
+        return pd.read_csv(p, index_col=0, parse_dates=True).sort_index()
+    return None
 
-macro_data = {mt: load_raw(mt) for mt in MACRO_TICKERS if load_raw(mt) is not None}
+macro_df = pd.DataFrame()
+for mt in MACRO_TICKERS:
+    d = load_raw(mt)
+    if d is not None and 'Close' in d.columns:
+        macro_df[mt] = d['Close']
+macro_df = macro_df.ffill()
 
-fred_data = {ft: load_raw(ft) for ft in FRED_TICKERS if load_raw(ft) is not None}
 fred_df = pd.DataFrame()
-for ft, d in fred_data.items():
-    fred_df[ft] = d['Close']
+for ft in FRED_TICKERS:
+    d = load_raw(ft)
+    if d is not None and 'Close' in d.columns:
+        fred_df[ft] = d['Close']
 fred_df = fred_df.ffill() 
 
 for t in TICKERS:
@@ -85,7 +85,7 @@ for t in TICKERS:
     volatility = c.diff().abs().rolling(14).sum()
     features_df['KER'] = direction / (volatility + 1e-12)
 
-    features_df = features_df.join(fred_df, how='left').ffill()
+    features_df = features_df.join(macro_df, how='left').join(fred_df, how='left').ffill()
     
     df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
     barrier = features_df['ATR'] * 0.40 
@@ -95,31 +95,38 @@ for t in TICKERS:
     
     df_full = features_df.join(df[['label']]).shift(1).join(df[['label']], rsuffix='_target').dropna()
 
-    y = df_full['label_target'].values
-    X = df_full.drop(columns=['label', 'label_target']).values
-    feature_names = df_full.drop(columns=['label', 'label_target']).columns.tolist()
+    regimes = {"": df_full}
+    if t in TICKERS_TO_SPLIT and "^VIX" in features_df.columns:
+        vix_values = features_df.loc[df_full.index, "^VIX"]
+        regimes["_low_vix"] = df_full[vix_values < 20]
+        regimes["_high_vix"] = df_full[vix_values >= 20]
 
-    if len(y) < 100: continue
+    for suffix, regime_df in regimes.items():
+        if len(regime_df) < 100: continue
+        y = regime_df['label_target'].values
+        X = regime_df.drop(columns=['label', 'label_target']).values
+        feature_names = regime_df.drop(columns=['label', 'label_target']).columns.tolist()
 
-    n_test = int(len(X) * TEST_SIZE)
-    n_val = int(len(X) * VAL_SIZE)
-    n_train = len(X) - n_test - n_val
+        n_test = int(len(X) * TEST_SIZE)
+        n_val = int(len(X) * VAL_SIZE)
+        n_train = len(X) - n_test - n_val
 
-    X_train, y_train = X[:n_train], y[:n_train]
-    X_val, y_val = X[n_train:n_train+n_val], y[n_train:n_train+n_val]
-    X_test, y_test = X[-n_test:], y[-n_test:]
+        X_train, y_train = X[:n_train], y[:n_train]
+        X_val, y_val = X[n_train:n_train+n_val], y[n_train:n_train+n_val]
+        X_test, y_test = X[-n_test:], y[-n_test:]
 
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
-    X_test = scaler.transform(X_test)
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
+        X_test = scaler.transform(X_test)
 
-    joblib.dump(scaler, os.path.join(MODELS_DIR, f"{base}_scaler.joblib"))
-    joblib.dump(feature_names, os.path.join(MODELS_DIR, f"{base}_feature_list.joblib"))
+        rb = f"{base}{suffix}"
+        joblib.dump(scaler, os.path.join(MODELS_DIR, f"{rb}_scaler.joblib"))
+        joblib.dump(feature_names, os.path.join(MODELS_DIR, f"{rb}_feature_list.joblib"))
 
-    np.save(os.path.join(PROC_DIR, f"{base}_X_train.npy"), X_train)
-    np.save(os.path.join(PROC_DIR, f"{base}_y_train.npy"), y_train)
-    np.save(os.path.join(PROC_DIR, f"{base}_X_val.npy"), X_val)
-    np.save(os.path.join(PROC_DIR, f"{base}_y_val.npy"), y_val)
-    np.save(os.path.join(PROC_DIR, f"{base}_X_test.npy"), X_test)
-    np.save(os.path.join(PROC_DIR, f"{base}_y_test.npy"), y_test)
+        np.save(os.path.join(PROC_DIR, f"{rb}_X_train.npy"), X_train)
+        np.save(os.path.join(PROC_DIR, f"{rb}_y_train.npy"), y_train)
+        np.save(os.path.join(PROC_DIR, f"{rb}_X_val.npy"), X_val)
+        np.save(os.path.join(PROC_DIR, f"{rb}_y_val.npy"), y_val)
+        np.save(os.path.join(PROC_DIR, f"{rb}_X_test.npy"), X_test)
+        np.save(os.path.join(PROC_DIR, f"{rb}_y_test.npy"), y_test)
