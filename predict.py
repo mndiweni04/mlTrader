@@ -145,7 +145,7 @@ if __name__ == "__main__":
             bull_threshold = choice.get('thresholds', {}).get('bull', 0.55)
             bear_threshold = choice.get('thresholds', {}).get('bear', 0.45)
         
-        direction = "HOLD"
+       direction = "HOLD"
         if prob >= bull_threshold: direction = "BULLISH"
         elif prob <= bear_threshold: direction = "BEARISH"
         
@@ -155,19 +155,24 @@ if __name__ == "__main__":
             sl_dist = atr * ATR_SL_MULT
             tp_dist = atr * ATR_TP_MULT
             
+            # Correct the win probability based on trade direction
+            win_prob = prob if direction == "BULLISH" else (1.0 - prob)
+            loss_prob = 1.0 - win_prob
+            
             b = tp_dist / sl_dist
-            q = 1.0 - prob
-            kelly_f = (prob * b - q) / b
+            kelly_f = (win_prob * b - loss_prob) / b
             fractional_kelly = max(0.0, 0.25 * kelly_f)
             allocation_zar = BASE_CAPITAL_ZAR * fractional_kelly
             
-            signals.append({
-                "ticker": t, "direction": direction, "confidence": prob,
-                "entry": last_close, 
-                "sl": last_close - sl_dist if direction == "BULLISH" else last_close + sl_dist,
-                "tp": last_close + tp_dist if direction == "BULLISH" else last_close - tp_dist,
-                "allocation_zar": round(allocation_zar, 2),
-                "kelly_percentage": round(fractional_kelly * 100, 2),
-                "model_regime": suffix.replace('_', '') if suffix else 'standard'
-            })
+            # Only append signals that have a capital allocation greater than 0
+            if allocation_zar > 0:
+                signals.append({
+                    "ticker": t, "direction": direction, "confidence": prob,
+                    "entry": last_close, 
+                    "sl": last_close - sl_dist if direction == "BULLISH" else last_close + sl_dist,
+                    "tp": last_close + tp_dist if direction == "BULLISH" else last_close - tp_dist,
+                    "allocation_zar": round(allocation_zar, 2),
+                    "kelly_percentage": round(fractional_kelly * 100, 2),
+                    "model_regime": suffix.replace('_', '') if suffix else 'standard'
+                })
     print(json.dumps(signals, indent=2))
