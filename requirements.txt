@@ -8,4 +8,3 @@ yfinance
 pytz
 matplotlib
 fredapi
-streamlit
