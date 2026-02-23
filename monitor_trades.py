@@ -60,9 +60,7 @@ def monitor_open_trades():
 
     if not trades: return
 
-    # --- FIX 2: Strict Open Check ---
     # Only monitor items that are strictly 'OPEN'. 
-    # SKIPPED trades are ignored safely here.
     open_trades = [row for row in trades if row['status'] == 'OPEN']
     open_tickers = list(set([row['ticker'] for row in open_trades]))
     
@@ -92,7 +90,10 @@ def monitor_open_trades():
         entry = float(row['entry_price'])
         sl = float(row['stop_loss'])
         tp = float(row['take_profit'])
-        pred_date = datetime.strptime(row['prediction_date'], '%Y-%m-%d').date()
+        
+        # FIX: Split the string to isolate just the YYYY-MM-DD part before formatting
+        date_str = row['prediction_date'].split(' ')[0]
+        pred_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         
         close_reason = None
         if direction == "BULLISH":
@@ -112,11 +113,21 @@ def monitor_open_trades():
             row['status'] = f"CLOSED ({close_reason})"
             row['close_date'] = current_price_date
             row['close_price'] = round(current_price, 6)
-            row['pnl'] = calculate_pnl(direction, entry, current_price, row['lots'], dollar_per_point)
+            
+            # FIX: Safely fallback to 1.0 lot if the 'lots' column no longer exists
+            lots_traded = row.get('lots', 1.0) 
+            row['pnl'] = calculate_pnl(direction, entry, current_price, lots_traded, dollar_per_point)
+            
             print(f"  [Monitor] CLOSING {row['ticker']} ({direction}): {close_reason} | P/L: ${row['pnl']}")
 
     if closed_count > 0:
         print(f"  [Monitor] Updating log file...")
+        
+        # If 'close_date', 'close_price', and 'pnl' are missing from fieldnames, add them
+        for new_col in ['close_date', 'close_price', 'pnl']:
+            if new_col not in fieldnames:
+                fieldnames.append(new_col)
+                
         with open(TRADES_LOG_FILE, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
