@@ -4,10 +4,19 @@ import pandas as pd
 import os
 import warnings
 import time
+from fredapi import Fred
 
 CORE_TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
 MACRO_TICKERS = ["DX=F", "TLT", "^VIX", "XLE", "ZS=F", "ZW=F", "XLF", "XLK"]
 TICKERS = CORE_TICKERS + MACRO_TICKERS
+
+FRED_SERIES = {
+    "FRED_T10Y2Y": "T10Y2Y",
+    "FRED_UNRATE": "UNRATE",
+    "FRED_CPIAUCSL": "CPIAUCSL",
+    "FRED_M2SL": "M2SL",
+    "FRED_DGS10": "DGS10"
+}
 
 PERIOD = "10y" 
 INTERVAL = "1d"
@@ -21,7 +30,6 @@ def download_data(ticker):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=FutureWarning)
-                # threads=False prevents the hang on Windows/Git
                 df = yf.download(
                     ticker, 
                     period=PERIOD, 
@@ -62,6 +70,23 @@ def download_data(ticker):
             else: print(f"  All retries failed for {ticker}."); return None
     return None
 
+def download_fred_data():
+    api_key = os.environ.get("FRED_API_KEY")
+    if not api_key:
+        print("FRED_API_KEY not found in environment. Skipping FRED macroeconomic data.")
+        return
+    
+    fred = Fred(api_key=api_key)
+    for name, series_id in FRED_SERIES.items():
+        print(f"Downloading FRED series {name}...")
+        try:
+            data = fred.get_series(series_id)
+            df = pd.DataFrame({'Close': data})
+            df.index.name = 'Date'
+            save_csv(df, name)
+        except Exception as e:
+            print(f"Failed to download FRED {name}: {e}")
+
 def save_csv(df, ticker):
     if df is None or df.empty: return
     os.makedirs("data/raw", exist_ok=True)
@@ -74,3 +99,4 @@ if __name__ == "__main__":
     for t in TICKERS:
         df = download_data(t)
         save_csv(df, t)
+    download_fred_data()
