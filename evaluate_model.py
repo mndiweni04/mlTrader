@@ -87,10 +87,11 @@ def calculate_recall_metrics(ypred, yte):
     except Exception:
         return 0.0, 0.0, 0.0
     
-    if recall_0 == 0.0 and recall_1 == 0.0:
+    denom = max(recall_0, recall_1)
+    if denom == 0.0:
         recall_symmetry = 0.0
     else:
-        recall_symmetry = float(min(recall_0, recall_1) / (max(recall_0, recall_1) + 1e-12))
+        recall_symmetry = float(min(recall_0, recall_1) / denom)
     
     return recall_0, recall_1, recall_symmetry
 
