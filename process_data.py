@@ -52,20 +52,20 @@ def load_raw(ticker):
 macro_df = pd.DataFrame()
 for mt in MACRO_TICKERS:
     d = load_raw(mt)
-    if d is not None and 'Close' in d.columns:
+    if d is not None and not d.empty and 'Close' in d.columns:
         macro_df[mt] = d['Close']
 macro_df = macro_df.ffill()
 
 fred_df = pd.DataFrame()
 for ft in FRED_TICKERS:
     d = load_raw(ft)
-    if d is not None and 'Close' in d.columns:
+    if d is not None and not d.empty and 'Close' in d.columns:
         fred_df[ft] = d['Close']
 fred_df = fred_df.ffill() 
 
 for t in TICKERS:
     df = load_raw(t)
-    if df is None: continue
+    if df is None or df.empty: continue
     
     base = t.replace('=','_').lower()
     df['Close'].to_csv(os.path.join(PROC_DIR, f"{base}_test_prices.csv"))
@@ -86,6 +86,10 @@ for t in TICKERS:
     features_df['KER'] = direction / (volatility + 1e-12)
 
     features_df = features_df.join(macro_df, how='left').join(fred_df, how='left').ffill()
+    
+    features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    features_df.fillna(method='ffill', inplace=True)
+    features_df.fillna(0.0, inplace=True)
     
     df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
     barrier = features_df['ATR'] * 0.40 
