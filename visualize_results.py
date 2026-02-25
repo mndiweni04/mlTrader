@@ -35,6 +35,12 @@ def analyze_trade_log():
     # Filter for closed trades
     df_closed = df[df['status'] != 'OPEN'].copy()
 
+    # Legacy Schema Backward Compatibility
+    if 'model_regime' not in df_closed.columns:
+        df_closed['model_regime'] = 'standard'
+    if 'kelly_percentage' not in df_closed.columns:
+        df_closed['kelly_percentage'] = 0.0
+
     if df_closed.empty:
         print("No closed trades found yet. Run the monitor_trades.py script to update trade status.")
         
