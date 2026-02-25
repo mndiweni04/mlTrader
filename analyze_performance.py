@@ -44,8 +44,8 @@ def analyze_log():
         
         # Iterate through days to see what was hit first
         for i, daily_row in data.iterrows():
-            high = float(daily_row['High'])
-            low = float(daily_row['Low'])
+            high = float(daily_row['High'].iloc[0])
+            low = float(daily_row['Low'].iloc[0])
             
             if direction == "BULLISH":
                 if low <= sl:
