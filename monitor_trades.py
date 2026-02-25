@@ -7,6 +7,7 @@ from datetime import datetime
 import pytz
 import time
 import numpy as np 
+import tempfile
 
 LOGS_DIR = "logs"
 TRADES_LOG_FILE = os.path.join(LOGS_DIR, "live_trades_log.csv")
@@ -22,6 +23,11 @@ def fetch_current_price(ticker):
     try:
         df = yf.download(ticker, period="5d", interval="1d", progress=False, auto_adjust=False, timeout=10)
         if df is None or df.empty: return None, None
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            df = df.loc[:, ~df.columns.duplicated()]
+            
         latest = df.iloc[-1]
         price_date = latest.name.strftime('%Y-%m-%d')
         return latest['Close'].item(), price_date
@@ -53,14 +59,13 @@ def monitor_open_trades():
     try:
         with open(TRADES_LOG_FILE, 'r', newline='') as f:
             reader = csv.DictReader(f)
-            if reader.fieldnames: fieldnames = reader.fieldnames
+            if reader.fieldnames: fieldnames = list(reader.fieldnames)
             for row in reader: trades.append(row)
     except Exception as e:
         print(f"  [Monitor] Error reading log: {e}"); return
 
     if not trades: return
 
-    # Only monitor items that are strictly 'OPEN'. 
     open_trades = [row for row in trades if row['status'] == 'OPEN']
     open_tickers = list(set([row['ticker'] for row in open_trades]))
     
@@ -91,7 +96,6 @@ def monitor_open_trades():
         sl = float(row['stop_loss'])
         tp = float(row['take_profit'])
         
-        # FIX: Split the string to isolate just the YYYY-MM-DD part before formatting
         date_str = row['prediction_date'].split(' ')[0]
         pred_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         
@@ -114,7 +118,6 @@ def monitor_open_trades():
             row['close_date'] = current_price_date
             row['close_price'] = round(current_price, 6)
             
-            # FIX: Safely fallback to 1.0 lot if the 'lots' column no longer exists
             lots_traded = row.get('lots', 1.0) 
             row['pnl'] = calculate_pnl(direction, entry, current_price, lots_traded, dollar_per_point)
             
@@ -123,15 +126,16 @@ def monitor_open_trades():
     if closed_count > 0:
         print(f"  [Monitor] Updating log file...")
         
-        # If 'close_date', 'close_price', and 'pnl' are missing from fieldnames, add them
         for new_col in ['close_date', 'close_price', 'pnl']:
             if new_col not in fieldnames:
                 fieldnames.append(new_col)
                 
-        with open(TRADES_LOG_FILE, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+        temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(TRADES_LOG_FILE))
+        with os.fdopen(temp_fd, 'w', newline='') as tmp:
+            writer = csv.DictWriter(tmp, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(trades)
+        os.replace(temp_path, TRADES_LOG_FILE)
         print("  [Monitor] Log file updated.")
     else:
         print("[Monitor] No trades closed.")
