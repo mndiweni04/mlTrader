@@ -46,21 +46,29 @@ def load_raw(ticker):
     safe_ticker = ticker.replace('=','_').replace('^','').lower()
     p = os.path.join(RAW_DIR, f"{safe_ticker}_1d_data.csv")
     if os.path.exists(p):
-        return pd.read_csv(p, index_col=0, parse_dates=True).sort_index()
+        df = pd.read_csv(p, index_col=0, parse_dates=True).sort_index()
+        # Deduplicate indices to prevent Cartesian explosion during .join()
+        return df.loc[~df.index.duplicated(keep='last')]
     return None
 
 macro_df = pd.DataFrame()
 for mt in MACRO_TICKERS:
     d = load_raw(mt)
     if d is not None and not d.empty and 'Close' in d.columns:
-        macro_df[mt] = d['Close']
+        close_col = d['Close']
+        if isinstance(close_col, pd.DataFrame):
+            close_col = close_col.iloc[:, 0]
+        macro_df[mt] = close_col
 macro_df = macro_df.ffill()
 
 fred_df = pd.DataFrame()
 for ft in FRED_TICKERS:
     d = load_raw(ft)
     if d is not None and not d.empty and 'Close' in d.columns:
-        fred_df[ft] = d['Close']
+        close_col = d['Close']
+        if isinstance(close_col, pd.DataFrame):
+            close_col = close_col.iloc[:, 0]
+        fred_df[ft] = close_col
 fred_df = fred_df.ffill() 
 
 for t in TICKERS:
@@ -71,11 +79,15 @@ for t in TICKERS:
     df['Close'].to_csv(os.path.join(PROC_DIR, f"{base}_test_prices.csv"))
     
     features_df = pd.DataFrame(index=df.index)
-    c = df['Close'].astype(np.float64)
+    c = df['Close']
+    if isinstance(c, pd.DataFrame): 
+        c = c.iloc[:, 0]
+    c = c.astype(np.float64)
+    
     features_df['MA5'] = c.rolling(5).mean()
     features_df['MA20'] = c.rolling(20).mean()
     features_df['MA50'] = c.rolling(50).mean()
-    features_df['ATR'] = calc_atr(df['High'], df['Low'], c, 14)
+    features_df['ATR'] = calc_atr(df['High'].squeeze(), df['Low'].squeeze(), c, 14)
     u, m, lo = calc_bbands(c, 20, 2)
     features_df['BB_Width'] = (u - lo) / (m + 1e-12)
     features_df['RSI14'] = calc_rsi(c, 14)
@@ -85,13 +97,14 @@ for t in TICKERS:
     volatility = c.diff().abs().rolling(14).sum()
     features_df['KER'] = direction / (volatility + 1e-12)
 
-    features_df = features_df.join(macro_df, how='left').join(fred_df, how='left').ffill()
+    features_df = features_df.join(macro_df, how='left').join(fred_df, how='left')
     
     features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    features_df.fillna(method='ffill', inplace=True)
+    # Replaced deprecated fillna(method='ffill')
+    features_df.ffill(inplace=True)
     features_df.fillna(0.0, inplace=True)
     
-    df['future_return'] = df['Close'].shift(-PREDICTION_HORIZON) / df['Close'] - 1
+    df['future_return'] = c.shift(-PREDICTION_HORIZON) / c - 1
     barrier = features_df['ATR'] * 0.40 
     df['label'] = np.nan
     df.loc[df['future_return'] > barrier, 'label'] = 1
@@ -134,3 +147,5 @@ for t in TICKERS:
         np.save(os.path.join(PROC_DIR, f"{rb}_y_val.npy"), y_val)
         np.save(os.path.join(PROC_DIR, f"{rb}_X_test.npy"), X_test)
         np.save(os.path.join(PROC_DIR, f"{rb}_y_test.npy"), y_test)
+
+print("✅ process_data.py Complete")
