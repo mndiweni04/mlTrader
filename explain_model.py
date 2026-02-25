@@ -41,12 +41,15 @@ def plot_importance(ticker_raw):
         # Extract importances (Tree-based) or coefficients (Linear-based)
         importances = getattr(base_model, 'feature_importances_', None)
         if importances is None:
-            coef = getattr(base_model, 'coef_', None)
-            if coef is not None:
-                importances = np.abs(coef[0])
+            if hasattr(base_model, 'get_feature_importance'):
+                importances = base_model.get_feature_importance()
             else:
-                print(f"  [WARNING] No feature importances or coef_ found for {m_type}.")
-                importances = np.zeros(len(features))
+                coef = getattr(base_model, 'coef_', None)
+                if coef is not None:
+                    importances = np.abs(coef[0])
+                else:
+                    print(f"  [WARNING] No feature importances or coef_ found for {m_type}.")
+                    importances = np.zeros(len(features))
         
         df_imp = pd.DataFrame({'feature': features, 'importance': importances}).sort_values('importance', ascending=False).head(10)
         print(df_imp.to_string(index=False))
