@@ -89,6 +89,10 @@ def download_fred_data():
 
 def save_csv(df, ticker):
     if df is None or df.empty: return
+    
+    if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+        
     os.makedirs("data/raw", exist_ok=True)
     safe_ticker = ticker.replace('=','_').replace('^','').lower()
     file_path = os.path.join("data/raw", f"{safe_ticker}_{INTERVAL}_data.csv")
