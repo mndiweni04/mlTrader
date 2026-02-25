@@ -84,6 +84,10 @@ def engineer_live(df, macro_df, fred_df):
     
     feat = feat.join(macro_df, how='left').join(fred_df, how='left').ffill()
     
+    feat.replace([np.inf, -np.inf], np.nan, inplace=True)
+    feat.fillna(method='ffill', inplace=True)
+    feat.fillna(0.0, inplace=True)
+    
     lagged = feat.shift(1)
     lagged['ATR_current'] = feat['ATR']
     return lagged
@@ -121,10 +125,16 @@ if __name__ == "__main__":
         last_row = feat_df.iloc[-1].to_dict()
         
         X_dict = {}
+        missing_critical_features = False
         for f in features:
-            X_dict[f] = last_row.get(f, 0.0)
-            if pd.isna(X_dict[f]): X_dict[f] = 0.0
-                
+            if f not in last_row or pd.isna(last_row[f]):
+                missing_critical_features = True
+                break
+            X_dict[f] = last_row[f]
+        
+        if missing_critical_features:
+            continue
+            
         X = np.array([X_dict[f] for f in features]).reshape(1, -1)
         scaler = joblib.load(os.path.join(MODELS_DIR, f"{rb}_scaler.joblib"))
         X_scaled = scaler.transform(X)
@@ -145,7 +155,7 @@ if __name__ == "__main__":
             bull_threshold = choice.get('thresholds', {}).get('bull', 0.55)
             bear_threshold = choice.get('thresholds', {}).get('bear', 0.45)
         
-       direction = "HOLD"
+        direction = "HOLD"
         if prob >= bull_threshold: direction = "BULLISH"
         elif prob <= bear_threshold: direction = "BEARISH"
         
@@ -155,7 +165,6 @@ if __name__ == "__main__":
             sl_dist = atr * ATR_SL_MULT
             tp_dist = atr * ATR_TP_MULT
             
-            # Correct the win probability based on trade direction
             win_prob = prob if direction == "BULLISH" else (1.0 - prob)
             loss_prob = 1.0 - win_prob
             
@@ -164,7 +173,6 @@ if __name__ == "__main__":
             fractional_kelly = max(0.0, 0.25 * kelly_f)
             allocation_zar = BASE_CAPITAL_ZAR * fractional_kelly
             
-            # Only append signals that have a capital allocation greater than 0
             if allocation_zar > 0:
                 signals.append({
                     "ticker": t, "direction": direction, "confidence": prob,
