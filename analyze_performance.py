@@ -1,6 +1,8 @@
 import pandas as pd
 import yfinance as yf
 import os
+import tempfile
+import pytz
 from datetime import datetime, timedelta
 
 LOG_FILE = "logs/live_trades_log.csv"
@@ -21,17 +23,26 @@ def analyze_log():
 
     print(f"Analyzing {len(open_trades)} open trades...")
 
+    tz_local = pytz.timezone("Africa/Johannesburg")
+
     for index, row in open_trades.iterrows():
         ticker = row['ticker']
-        entry_date = pd.to_datetime(row['prediction_date']).tz_localize(None)
+        
+        entry_date_naive = pd.to_datetime(row['prediction_date']).tz_localize(None)
+        entry_date_aware = tz_local.localize(entry_date_naive)
         
         # Skip if trade is less than 1 day old
-        if (datetime.now() - entry_date).days < 1:
+        if (datetime.now(tz_local) - entry_date_aware).days < 1:
             continue
 
         # Fetch price history since entry
-        data = yf.download(ticker, start=entry_date, progress=False)
+        data = yf.download(ticker, start=entry_date_naive, progress=False)
         if data.empty: continue
+
+        # Flattens MultiIndex if present
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+            data = data.loc[:, ~data.columns.duplicated()]
 
         # Logic: Did we hit SL or TP?
         entry_price = float(row['entry_price'])
@@ -44,8 +55,8 @@ def analyze_log():
         
         # Iterate through days to see what was hit first
         for i, daily_row in data.iterrows():
-            high = float(daily_row['High'].iloc[0])
-            low = float(daily_row['Low'].iloc[0])
+            high = float(daily_row['High'])
+            low = float(daily_row['Low'])
             
             if direction == "BULLISH":
                 if low <= sl:
@@ -69,11 +80,15 @@ def analyze_log():
         # Update DataFrame if status changed
         if status != "OPEN":
             df.at[index, 'status'] = status
-            df.at[index, 'realized_pnl'] = round(pnl * float(row['lots']) * 1000, 2) # Approx value
-            print(f"Trade {row['trade_id']} ({ticker}): {status}")
+            allocation = float(row.get('allocation_zar', 0.0))
+            df.at[index, 'realized_pnl'] = round(pnl * allocation, 2) 
+            print(f"Trade {row.get('trade_id', 'UNKNOWN')} ({ticker}): {status}")
 
-    # Save back to CSV
-    df.to_csv(LOG_FILE, index=False)
+    # Atomic write to prevent file corruption
+    temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(LOG_FILE))
+    with os.fdopen(temp_fd, 'w') as tmp:
+        df.to_csv(tmp, index=False)
+    os.replace(temp_path, LOG_FILE)
     print("Log updated.")
 
 if __name__ == "__main__":
