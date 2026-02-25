@@ -35,6 +35,9 @@ for ticker in TICKERS:
         n_samples = len(y_train)
         if n_samples < 50:
             continue
+            
+        if len(np.unique(y_train)) < 2 or len(np.unique(y_val)) < 2:
+            continue
 
         method = "isotonic" if n_samples >= ISOTONIC_SAMPLE_THRESHOLD else "sigmoid"
         n_splits = 5 if n_samples >= 100 else 2
