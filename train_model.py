@@ -59,7 +59,7 @@ for ticker in TICKERS:
 
         if not iters:
             continue
-        avg_iter, avg_w = int(np.mean(iters)), np.mean(weights)
+        avg_iter, avg_w = max(1, int(np.mean(iters))), np.mean(weights)
 
         xgb_f = xgb.XGBClassifier(n_estimators=avg_iter, max_depth=4, scale_pos_weight=avg_w).fit(X_train, y_train)
         cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv="prefit")
