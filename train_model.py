@@ -20,19 +20,20 @@ REGIME_SUFFIXES = ["", "_low_vix", "_high_vix"]
 manifest = {}
 missing_dependencies = []
 
-# Phase 1: Dependency Verification
+# Phase 1: Dependency Verification (Base Regimes Only)
 for ticker in TICKERS:
     base = ticker.replace("=", "_").lower()
-    for suffix in REGIME_SUFFIXES:
-        rb = f"{base}{suffix}"
-        if not os.path.exists(os.path.join(DATA_DIR, f"{rb}_X_train.npy")) or \
-           not os.path.exists(os.path.join(DATA_DIR, f"{rb}_y_train.npy")):
-            missing_dependencies.append(rb)
+    
+    # Check ONLY the primary dataset. Sub-regimes are evaluated optionally later.
+    rb_base = f"{base}"
+    if not os.path.exists(os.path.join(DATA_DIR, f"{rb_base}_X_train.npy")) or \
+       not os.path.exists(os.path.join(DATA_DIR, f"{rb_base}_y_train.npy")):
+        missing_dependencies.append(rb_base)
 
 if missing_dependencies:
-    print(f"CRITICAL ERROR: Missing processed data for {len(missing_dependencies)} regimes.")
-    print(f"Missing regimes: {', '.join(missing_dependencies)}")
-    raise FileNotFoundError("process_data.py failed to produce required files. Halting training.")
+    print(f"CRITICAL ERROR: Missing processed data for {len(missing_dependencies)} base tickers.")
+    print(f"Missing base datasets: {', '.join(missing_dependencies)}")
+    raise FileNotFoundError("process_data.py failed to produce core files. Halting training.")
 
 # Phase 2: Model Training
 for ticker in TICKERS:
@@ -40,7 +41,14 @@ for ticker in TICKERS:
     for suffix in REGIME_SUFFIXES:
         rb = f"{base}{suffix}"
         
-        X_train, y_train = np.load(os.path.join(DATA_DIR, f"{rb}_X_train.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_train.npy"))
+        train_x_path = os.path.join(DATA_DIR, f"{rb}_X_train.npy")
+        train_y_path = os.path.join(DATA_DIR, f"{rb}_y_train.npy")
+        
+        # Structural Guardrail: Bypass gracefully if a specific volatility sub-regime lacks sample size
+        if not os.path.exists(train_x_path) or not os.path.exists(train_y_path):
+            continue
+            
+        X_train, y_train = np.load(train_x_path), np.load(train_y_path)
         X_val, y_val = np.load(os.path.join(DATA_DIR, f"{rb}_X_val.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_val.npy"))
 
         n_samples = len(y_train)
