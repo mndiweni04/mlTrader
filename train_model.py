@@ -1,5 +1,6 @@
 # train_model.py
 import os
+import sys
 import joblib
 import json
 import numpy as np
@@ -14,19 +15,33 @@ import warnings
 warnings.filterwarnings("ignore")
 
 DATA_DIR, MODELS_DIR = "data/processed", "models"
-# Added popular commodities, indices, crypto, and volatile stocks
 TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "HG=F", "EURUSD=X", "JPYUSD=X", "BTC-USD", "ETH-USD", "ES=F", "NQ=F", "RTY=F", "TSLA", "NVDA"]
 REGIME_SUFFIXES = ["", "_low_vix", "_high_vix"]
 manifest = {}
+missing_dependencies = []
 
+# Phase 1: Dependency Verification
 for ticker in TICKERS:
     base = ticker.replace("=", "_").lower()
     for suffix in REGIME_SUFFIXES:
         rb = f"{base}{suffix}"
-        try:
-            X_train, y_train = np.load(os.path.join(DATA_DIR, f"{rb}_X_train.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_train.npy"))
-            X_val, y_val = np.load(os.path.join(DATA_DIR, f"{rb}_X_val.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_val.npy"))
-        except FileNotFoundError: continue
+        if not os.path.exists(os.path.join(DATA_DIR, f"{rb}_X_train.npy")) or \
+           not os.path.exists(os.path.join(DATA_DIR, f"{rb}_y_train.npy")):
+            missing_dependencies.append(rb)
+
+if missing_dependencies:
+    print(f"CRITICAL ERROR: Missing processed data for {len(missing_dependencies)} regimes.")
+    print(f"Missing regimes: {', '.join(missing_dependencies)}")
+    raise FileNotFoundError("process_data.py failed to produce required files. Halting training.")
+
+# Phase 2: Model Training
+for ticker in TICKERS:
+    base = ticker.replace("=", "_").lower()
+    for suffix in REGIME_SUFFIXES:
+        rb = f"{base}{suffix}"
+        
+        X_train, y_train = np.load(os.path.join(DATA_DIR, f"{rb}_X_train.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_train.npy"))
+        X_val, y_val = np.load(os.path.join(DATA_DIR, f"{rb}_X_val.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_val.npy"))
 
         n_samples = len(y_train)
         if n_samples < 50 or len(np.unique(y_train)) < 2: continue
@@ -57,7 +72,6 @@ for ticker in TICKERS:
             ("lr", LogisticRegression(class_weight="balanced", C=0.1)),
             ("cb", CatBoostClassifier(iterations=avg_iter, depth=4, auto_class_weights='Balanced', verbose=0))
         ]:
-            # Train & Calibrate in one step using the PredefinedSplit mapping train/val folds
             cal = CalibratedClassifierCV(estimator=clf, method=method, cv=ps).fit(X_all, y_all)
             joblib.dump(cal, os.path.join(MODELS_DIR, f"{rb}_{name}_calibrated.joblib"))
         
