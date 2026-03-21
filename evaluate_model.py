@@ -59,7 +59,9 @@ for t in TICKERS:
                 score = pnl.sum() * 100
                 if score > best_score and count >= 5:
                     best_score = score
-                    best_cfg = {"model_type": m_type, "thresholds": {"bull": b_up, "bear": b_dn}, "trading_enabled": True}
+                    # Structural Guardrail: Enforce strict positive profitability threshold
+                    is_profitable = score > 0
+                    best_cfg = {"model_type": m_type, "thresholds": {"bull": b_up, "bear": b_dn}, "trading_enabled": is_profitable}
 
         joblib.dump(best_cfg, os.path.join(MODELS_DIR, f"{rb}_model_choice.joblib"))
-        print(f"Evaluated {rb}: Best {best_cfg['model_type']} ({best_score:.2f}%)")
+        print(f"Evaluated {rb}: Best {best_cfg['model_type']} ({best_score:.2f}%) - Trading Enabled: {best_cfg['trading_enabled']}")
