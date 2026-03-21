@@ -54,36 +54,10 @@ def generate_features(df, macro_df=None, fred_df=None):
     feat.fillna(0.0, inplace=True)
     return feat
 
-def apply_rolling_scaling(features_df, window=252):
-    """
-    Applies a rolling standard scaler to prevent distribution drift.
-    Requires at least 'window' rows of historical data.
-    """
-    scaled_df = pd.DataFrame(index=features_df.index)
-    
-    for column in features_df.columns:
-        # Do not scale categorical/macro indices if they are meant to be absolute
-        if column.startswith('^') or column.startswith('FRED_'):
-            scaled_df[column] = features_df[column]
-            continue
-            
-        rolling_mean = features_df[column].rolling(window=window, min_periods=window).mean()
-        rolling_std = features_df[column].rolling(window=window, min_periods=window).std()
-        
-        scaled_df[column] = (features_df[column] - rolling_mean) / (rolling_std + 1e-8)
-        
-    return scaled_df
-
-def get_current_state(df, macro_df, fred_df, window=252):
-    """Returns the latest scaled feature vector and current ATR for sizing."""
+def get_current_state(df, macro_df, fred_df):
+    """Returns the latest feature vector, current ATR, and last price."""
     feat_df = generate_features(df, macro_df, fred_df)
-    scaled_df = apply_rolling_scaling(feat_df, window)
-    
-    # Lag features by 1 to represent T-1 prediction for T
-    lagged = scaled_df.shift(1)
-    
-    latest_features = lagged.iloc[-1].to_dict()
+    latest_features = feat_df.iloc[-1].to_dict()
     current_atr = feat_df['ATR'].iloc[-1]
     last_close = df['Close'].iloc[-1]
-    
     return latest_features, current_atr, last_close

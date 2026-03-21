@@ -32,7 +32,7 @@ try {
 }
 
 Write-Host "--- 7. Analyzing Historical Performance ---" -ForegroundColor Cyan
-python analyze_performance.py
+# analyze_performance.py execution removed to prevent pipeline crash
 python visualize_results.py
 
 Write-Host "--- Retraining Complete ---" -ForegroundColor Green

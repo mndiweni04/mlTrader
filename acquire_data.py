@@ -6,8 +6,10 @@ import warnings
 import time
 from fredapi import Fred
 
-CORE_TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
-MACRO_TICKERS = ["DX=F", "TLT", "^VIX", "XLE", "ZS=F", "ZW=F", "XLF", "XLK"]
+# Added popular commodities, indices, crypto, and volatile stocks
+CORE_TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "HG=F", "EURUSD=X", "JPYUSD=X", "BTC-USD", "ETH-USD", "ES=F", "NQ=F", "RTY=F", "TSLA", "NVDA"]
+# Replaced delisted DX=F with UUP (Invesco DB US Dollar Index Bullish Fund)
+MACRO_TICKERS = ["UUP", "TLT", "^VIX", "XLE", "ZS=F", "ZW=F", "XLF", "XLK"]
 TICKERS = CORE_TICKERS + MACRO_TICKERS
 
 FRED_SERIES = {

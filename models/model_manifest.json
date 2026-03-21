@@ -1,93 +1,52 @@
 {
-  "cl_f": {
-    "last_trained": "2026-02-14T14:06:16.349814",
-    "training_samples": 1602,
-    "calibration_method": "isotonic",
-    "xgb_model": "cl_f_xgb_calibrated.joblib",
-    "lr_model": "cl_f_lr_calibrated.joblib"
-  },
-  "gc_f": {
-    "last_trained": "2026-02-14T14:06:16.768597",
-    "training_samples": 1624,
-    "calibration_method": "isotonic",
-    "xgb_model": "gc_f_xgb_calibrated.joblib",
-    "lr_model": "gc_f_lr_calibrated.joblib"
-  },
-  "si_f": {
-    "last_trained": "2026-02-14T14:06:17.130075",
-    "training_samples": 154,
-    "calibration_method": "sigmoid",
-    "xgb_model": "si_f_xgb_calibrated.joblib",
-    "lr_model": "si_f_lr_calibrated.joblib"
+  "ng_f": {
+    "last_trained": "2026-03-21T21:00:23.651047",
+    "samples": 771,
+    "calibration": "isotonic"
   },
   "ng_f_low_vix": {
-    "last_trained": "2026-02-14T14:06:17.583763",
-    "training_samples": 826,
-    "calibration_method": "isotonic",
-    "xgb_model": "ng_f_low_vix_xgb_calibrated.joblib",
-    "lr_model": "ng_f_low_vix_lr_calibrated.joblib"
+    "last_trained": "2026-03-21T21:00:23.949113",
+    "samples": 573,
+    "calibration": "isotonic"
   },
   "ng_f_high_vix": {
-    "last_trained": "2026-02-14T14:06:17.904493",
-    "training_samples": 290,
-    "calibration_method": "isotonic",
-    "xgb_model": "ng_f_high_vix_xgb_calibrated.joblib",
-    "lr_model": "ng_f_high_vix_lr_calibrated.joblib"
+    "last_trained": "2026-03-21T21:00:24.261625",
+    "samples": 200,
+    "calibration": "isotonic"
   },
-  "zc_f": {
-    "last_trained": "2026-02-14T14:06:18.428649",
-    "training_samples": 1686,
-    "calibration_method": "isotonic",
-    "xgb_model": "zc_f_xgb_calibrated.joblib",
-    "lr_model": "zc_f_lr_calibrated.joblib"
+  "hg_f": {
+    "last_trained": "2026-03-21T21:00:24.532288",
+    "samples": 780,
+    "calibration": "isotonic"
   },
   "eurusd_x": {
-    "last_trained": "2026-02-14T14:06:18.921025",
-    "training_samples": 1590,
-    "calibration_method": "isotonic",
-    "xgb_model": "eurusd_x_xgb_calibrated.joblib",
-    "lr_model": "eurusd_x_lr_calibrated.joblib"
+    "last_trained": "2026-03-21T21:00:24.899493",
+    "samples": 1242,
+    "calibration": "isotonic"
+  },
+  "jpyusd_x": {
+    "last_trained": "2026-03-21T21:00:25.200640",
+    "samples": 1808,
+    "calibration": "isotonic"
   },
   "jpyusd_x_low_vix": {
-    "last_trained": "2026-02-14T14:06:19.427259",
-    "training_samples": 1196,
-    "calibration_method": "isotonic",
-    "xgb_model": "jpyusd_x_low_vix_xgb_calibrated.joblib",
-    "lr_model": "jpyusd_x_low_vix_lr_calibrated.joblib"
+    "last_trained": "2026-03-21T21:00:25.483950",
+    "samples": 1262,
+    "calibration": "isotonic"
   },
   "jpyusd_x_high_vix": {
-    "last_trained": "2026-02-14T14:06:19.775457",
-    "training_samples": 474,
-    "calibration_method": "isotonic",
-    "xgb_model": "jpyusd_x_high_vix_xgb_calibrated.joblib",
-    "lr_model": "jpyusd_x_high_vix_lr_calibrated.joblib"
+    "last_trained": "2026-03-21T21:00:25.751891",
+    "samples": 546,
+    "calibration": "isotonic"
   },
-  "es_f_low_vix": {
-    "last_trained": "2026-02-14T14:06:20.155151",
-    "training_samples": 980,
-    "calibration_method": "isotonic",
-    "xgb_model": "es_f_low_vix_xgb_calibrated.joblib",
-    "lr_model": "es_f_low_vix_lr_calibrated.joblib"
+  "nvda": {
+    "last_trained": "2026-03-21T21:00:26.113275",
+    "samples": 318,
+    "calibration": "isotonic"
   },
-  "es_f_high_vix": {
-    "last_trained": "2026-02-14T14:06:20.476271",
-    "training_samples": 424,
-    "calibration_method": "isotonic",
-    "xgb_model": "es_f_high_vix_xgb_calibrated.joblib",
-    "lr_model": "es_f_high_vix_lr_calibrated.joblib"
-  },
-  "nq_f_low_vix": {
-    "last_trained": "2026-02-14T14:06:20.869601",
-    "training_samples": 978,
-    "calibration_method": "isotonic",
-    "xgb_model": "nq_f_low_vix_xgb_calibrated.joblib",
-    "lr_model": "nq_f_low_vix_lr_calibrated.joblib"
-  },
-  "nq_f_high_vix": {
-    "last_trained": "2026-02-14T14:06:21.170769",
-    "training_samples": 436,
-    "calibration_method": "isotonic",
-    "xgb_model": "nq_f_high_vix_xgb_calibrated.joblib",
-    "lr_model": "nq_f_high_vix_lr_calibrated.joblib"
+  "nvda_low_vix": {
+    "last_trained": "2026-03-21T21:00:26.463914",
+    "samples": 288,
+    "calibration": "isotonic"
   }
 }

@@ -5,19 +5,18 @@ import json
 import numpy as np
 import xgboost as xgb
 from catboost import CatBoostClassifier
-import warnings
-from datetime import datetime
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, PredefinedSplit
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
+from datetime import datetime
+import warnings
 
 warnings.filterwarnings("ignore")
 
 DATA_DIR, MODELS_DIR = "data/processed", "models"
-TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "EURUSD=X", "JPYUSD=X", "ES=F", "NQ=F"]
+# Added popular commodities, indices, crypto, and volatile stocks
+TICKERS = ["CL=F", "GC=F", "SI=F", "NG=F", "ZC=F", "HG=F", "EURUSD=X", "JPYUSD=X", "BTC-USD", "ETH-USD", "ES=F", "NQ=F", "RTY=F", "TSLA", "NVDA"]
 REGIME_SUFFIXES = ["", "_low_vix", "_high_vix"]
-ISOTONIC_SAMPLE_THRESHOLD = 200
-
 manifest = {}
 
 for ticker in TICKERS:
@@ -25,77 +24,44 @@ for ticker in TICKERS:
     for suffix in REGIME_SUFFIXES:
         rb = f"{base}{suffix}"
         try:
-            X_train = np.load(os.path.join(DATA_DIR, f"{rb}_X_train.npy"))
-            y_train = np.load(os.path.join(DATA_DIR, f"{rb}_y_train.npy"))
-            X_val = np.load(os.path.join(DATA_DIR, f"{rb}_X_val.npy"))
-            y_val = np.load(os.path.join(DATA_DIR, f"{rb}_y_val.npy"))
-        except FileNotFoundError:
-            continue
+            X_train, y_train = np.load(os.path.join(DATA_DIR, f"{rb}_X_train.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_train.npy"))
+            X_val, y_val = np.load(os.path.join(DATA_DIR, f"{rb}_X_val.npy")), np.load(os.path.join(DATA_DIR, f"{rb}_y_val.npy"))
+        except FileNotFoundError: continue
 
         n_samples = len(y_train)
-        if n_samples < 50:
-            continue
-            
-        if len(np.unique(y_train)) < 2 or len(np.unique(y_val)) < 2:
-            continue
+        if n_samples < 50 or len(np.unique(y_train)) < 2: continue
 
-        method = "isotonic" if n_samples >= ISOTONIC_SAMPLE_THRESHOLD else "sigmoid"
-        n_splits = 5 if n_samples >= 100 else 2
-        tscv = TimeSeriesSplit(n_splits=n_splits)
+        method = "isotonic" if n_samples >= 200 else "sigmoid"
+        tscv = TimeSeriesSplit(n_splits=5 if n_samples >= 100 else 2)
         
-        iters, weights = [], []
+        iters = []
         for train_idx, test_idx in tscv.split(X_train):
-            Xt, Xv = X_train[train_idx], X_train[test_idx]
-            yt, yv = y_train[train_idx], y_train[test_idx]
-            if len(np.unique(yt)) < 2:
-                continue
-            
-            w = np.sum(yt==0) / (np.sum(yt==1) + 1e-8)
-            weights.append(w)
-            m = xgb.XGBClassifier(n_estimators=500, max_depth=4, learning_rate=0.05, 
-                                  scale_pos_weight=w, early_stopping_rounds=20, eval_metric="logloss")
+            Xt, yt = X_train[train_idx], y_train[train_idx]
+            Xv, yv = X_train[test_idx], y_train[test_idx]
+            if len(np.unique(yt)) < 2: continue
+            m = xgb.XGBClassifier(n_estimators=500, max_depth=4, learning_rate=0.05, early_stopping_rounds=20, eval_metric="logloss")
             m.fit(Xt, yt, eval_set=[(Xv, yv)], verbose=False)
             iters.append(m.best_iteration)
 
-        if not iters:
-            continue
-        avg_iter, avg_w = max(1, int(np.mean(iters))), np.mean(weights)
+        avg_iter = max(1, int(np.mean(iters))) if iters else 100
 
-        xgb_f = xgb.XGBClassifier(n_estimators=avg_iter, max_depth=4, scale_pos_weight=avg_w).fit(X_train, y_train)
-        cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv="prefit")
-        try:
-            cal_xgb.fit(X_val, y_val)
-        except ValueError:
-            cal_xgb = CalibratedClassifierCV(estimator=xgb_f, method=method, cv=None, ensemble=False)
-            cal_xgb.fit(X_val, y_val)
-        joblib.dump(cal_xgb, os.path.join(MODELS_DIR, f"{rb}_xgb_calibrated.joblib"))
-        
-        lr_f = LogisticRegression(class_weight="balanced", C=0.1).fit(X_train, y_train)
-        cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv="prefit")
-        try:
-            cal_lr.fit(X_val, y_val)
-        except ValueError:
-            cal_lr = CalibratedClassifierCV(estimator=lr_f, method=method, cv=None, ensemble=False)
-            cal_lr.fit(X_val, y_val)
-        joblib.dump(cal_lr, os.path.join(MODELS_DIR, f"{rb}_lr_calibrated.joblib"))
+        # Prepare unified dataset with PredefinedSplit to bypass deprecated cv="prefit" constraint
+        X_all = np.vstack((X_train, X_val))
+        y_all = np.concatenate((y_train, y_val))
+        test_fold = np.concatenate([-1 * np.ones(len(y_train)), np.zeros(len(y_val))])
+        ps = PredefinedSplit(test_fold)
 
-        cb_f = CatBoostClassifier(iterations=avg_iter, depth=4, auto_class_weights='Balanced', verbose=0).fit(X_train, y_train)
-        cal_cb = CalibratedClassifierCV(estimator=cb_f, method=method, cv="prefit")
-        try:
-            cal_cb.fit(X_val, y_val)
-        except ValueError:
-            cal_cb = CalibratedClassifierCV(estimator=cb_f, method=method, cv=None, ensemble=False)
-            cal_cb.fit(X_val, y_val)
-        joblib.dump(cal_cb, os.path.join(MODELS_DIR, f"{rb}_cb_calibrated.joblib"))
+        # Train and Calibrate Ensemble Components
+        for name, clf in [
+            ("xgb", xgb.XGBClassifier(n_estimators=avg_iter, max_depth=4)),
+            ("lr", LogisticRegression(class_weight="balanced", C=0.1)),
+            ("cb", CatBoostClassifier(iterations=avg_iter, depth=4, auto_class_weights='Balanced', verbose=0))
+        ]:
+            # Train & Calibrate in one step using the PredefinedSplit mapping train/val folds
+            cal = CalibratedClassifierCV(estimator=clf, method=method, cv=ps).fit(X_all, y_all)
+            joblib.dump(cal, os.path.join(MODELS_DIR, f"{rb}_{name}_calibrated.joblib"))
         
-        manifest[rb] = {
-            "last_trained": datetime.now().isoformat(),
-            "training_samples": int(n_samples),
-            "calibration_method": method,
-            "xgb_model": f"{rb}_xgb_calibrated.joblib",
-            "lr_model": f"{rb}_lr_calibrated.joblib",
-            "cb_model": f"{rb}_cb_calibrated.joblib"
-        }
+        manifest[rb] = {"last_trained": datetime.now().isoformat(), "samples": int(n_samples), "calibration": method}
 
 with open(os.path.join(MODELS_DIR, "model_manifest.json"), 'w') as f:
     json.dump(manifest, f, indent=2)
